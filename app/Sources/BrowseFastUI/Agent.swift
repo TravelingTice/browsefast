@@ -25,6 +25,13 @@ struct Question: Identifiable {
     let id = UUID()
     let text: String
     let choices: [Choice]
+    /// Also accept a typed answer (a date, a postcode, a name), with this example as the placeholder.
+    var textPlaceholder: String? = nil
+    /// Which site is asking, shown on the card; nil for questions from the task itself.
+    var site: String? = nil
+
+    /// A typed answer comes back as a choice with this option key.
+    static let typedOption = "typed"
 }
 
 /// The steps of the coordinator or of one tab agent. Every finished step also goes to the session log.

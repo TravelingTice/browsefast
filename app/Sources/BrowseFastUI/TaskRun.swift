@@ -5,7 +5,7 @@ import Observation
 /// and what each tab agent should do.
 struct Plan: Decodable {
     struct Goal: Decodable { let goal: String; let text: String }
-    struct SharedQuestion: Decodable { let question: String; let choices: [String] }
+    struct SharedQuestion: Decodable { let question: String; let choices: [String]; let allow_text: Bool; let placeholder: String }
     struct Source: Decodable { let name: String; let start_url: String; let instruction: String; let goals: [Goal] }
     let parallel: Bool
     let questions: [SharedQuestion]
@@ -91,10 +91,11 @@ final class TaskRun {
                                              : sources[0].goals.enumerated().map { "\($0.offset + 1). \($0.element.goal)" }.joined(separator: "\n"))
 
             // 2. Questions every site needs answered, asked once before the tabs start
-            for shared in plan.questions where !shared.choices.isEmpty {
+            for shared in plan.questions where !shared.choices.isEmpty || shared.allow_text {
                 timeline.add(.claude, "Asked you: \(shared.question)", status: .done)
                 let choices = shared.choices.prefix(20).map { Question.Choice(option: $0, label: $0) }
-                let picked = try await questions.ask(Question(text: shared.question, choices: Array(choices)))
+                let picked = try await questions.ask(Question(text: shared.question, choices: Array(choices),
+                                                              textPlaceholder: shared.allow_text ? shared.placeholder : nil))
                 remember(question: shared.question, signature: choices.map(\.label).sorted().joined(separator: "|"), answer: picked.label)
                 timeline.add(.you, "You chose '\(picked.label)'", status: .done)
             }

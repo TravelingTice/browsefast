@@ -53,6 +53,8 @@ final class TabAgent: Identifiable {
         struct Choice: Decodable { let option: String; let label: String }
         let question: String
         let choices: [Choice]
+        let allow_text: Bool
+        let placeholder: String
     }
 
     private var tag: String { timeline.logTag }
@@ -280,16 +282,17 @@ final class TabAgent: Identifiable {
                 case "ask_user":
                     // Every option, ignoring the loop guard: the user must be able to pick anything on the page.
                     let clickable = Prompts.options(for: page, goalText: "").filter { $0.key.hasPrefix("click_") }
-                    guard !clickable.isEmpty else { steps.fail(step, "Wanted to ask you something, but there was nothing to choose from"); continue work }
                     steps.finish(step, decider: decider, "Needs your input")
                     let askStep = steps.begin(.claude, "Writing a question for you…")
                     let asked = try await claude.json(AskOut.self, system: Prompts.asker,
                                                       prompt: state + "\n\nClickable options:\n" + clickable.map { "\($0.key): \($0.description)" }.joined(separator: "\n"),
-                                                      schema: Prompts.askSchema(keys: clickable.map(\.key)))
+                                                      schema: Prompts.askSchema(keys: clickable.isEmpty ? ["none"] : clickable.map(\.key)))
                     logClaude("Question", asked)
                     decisions[.claude, default: 0] += 1
-                    let choices = asked.value.choices.prefix(20).map { Question.Choice(option: $0.option, label: $0.label) }
-                    guard !choices.isEmpty else {
+                    let choices = asked.value.choices.prefix(20)
+                        .filter { $0.option != "none" }
+                        .map { Question.Choice(option: $0.option, label: $0.label) }
+                    guard !choices.isEmpty || asked.value.allow_text else {
                         // Usually the page is still rendering the options (a calendar animating in); look again.
                         steps.remove(step...askStep)
                         tried.insert("\(pageState)|ask")
@@ -313,9 +316,19 @@ final class TabAgent: Identifiable {
                         continue work
                     }
                     steps.finish(askStep, "Asked you: \(asked.value.question)")
-                    let picked = try await questions.ask(Question(text: asked.value.question, choices: choices))
+                    let picked = try await questions.ask(Question(text: asked.value.question, choices: choices,
+                                                                  textPlaceholder: asked.value.allow_text ? asked.value.placeholder : nil,
+                                                                  site: self.name))
                     coordinator.remember(question: asked.value.question, signature: signature, answer: picked.label)
                     Log.write(tag, "User answered '\(asked.value.question)' with '\(picked.label)' (\(picked.option))")
+                    if picked.option == Question.typedOption {
+                        // A typed answer isn't a button on the page: offer it as the next text to type, and let the
+                        // next decision put it where it belongs (a date field, a search box).
+                        steps.add(.you, "You answered '\(picked.label)'", status: .done)
+                        pendingTexts.insert(picked.label, at: 0)
+                        history.append("Asked the user '\(asked.value.question)'; they answered '\(picked.label)'. Use this answer on the page now.")
+                        continue work
+                    }
                     guard let pickedID = Prompts.parse(picked.option).id else { continue work }
                     let youStep = steps.begin(.you, "You chose '\(picked.label)'")
                     if try await perform(["kind": "click", "id": pickedID], step: youStep,

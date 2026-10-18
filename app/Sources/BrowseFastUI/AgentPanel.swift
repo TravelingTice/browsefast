@@ -101,8 +101,12 @@ struct AgentPanel: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.bottom, 12)
 
+                    if run.agents.count > 1 {
+                        GroupHeader(icon: AnyView(LogoMark()), title: "Task", status: run.isRunning ? "coordinating" : "")
+                    }
                     ForEach(run.timeline.steps) { step in
                         StepRow(step: step)
+                            .padding(.leading, run.agents.count > 1 ? 6 : 0)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
@@ -259,6 +263,10 @@ private struct AgentSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            Color.clear.frame(height: 0)
+                .onChange(of: agent.isWaiting) { _, waiting in
+                    if waiting { withAnimation(.smooth(duration: 0.2)) { collapsed = false } }
+                }
             HStack(spacing: 8) {
                 Group {
                     if let icon = agent.tab.favicon {
@@ -328,12 +336,16 @@ private struct AgentSection: View {
 private struct QuestionCard: View {
     let question: Question
     let answer: (Question.Choice) -> Void
+    @State private var typed = ""
+    @FocusState private var fieldFocused: Bool
+
+    private var canSend: Bool { !typed.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble.fill").font(.system(size: 11, weight: .bold))
-                Text("Your choice").font(Theme.figtree(12, weight: 700))
+                Text(question.site.map { "\($0) asks" } ?? "Your choice").font(Theme.figtree(12, weight: 700))
             }
             .foregroundStyle(Theme.violetLight)
 
@@ -342,10 +354,40 @@ private struct QuestionCard: View {
                 .foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(spacing: 6) {
-                ForEach(question.choices) { choice in
-                    ChoiceButton(label: choice.label) { answer(choice) }
+            if !question.choices.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(question.choices) { choice in
+                        ChoiceButton(label: choice.label) { answer(choice) }
+                    }
                 }
+            }
+
+            if let placeholder = question.textPlaceholder {
+                HStack(spacing: 8) {
+                    TextField(question.choices.isEmpty ? placeholder : "Or type your answer, \(placeholder.prefix(1).lowercased() + placeholder.dropFirst())",
+                              text: $typed)
+                        .textFieldStyle(.plain)
+                        .font(Theme.figtree(13.5, weight: 500))
+                        .foregroundStyle(.white)
+                        .tint(Theme.violetLight)
+                        .focused($fieldFocused)
+                        .onSubmit(send)
+                    Button(action: send) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(canSend ? Theme.ink : Theme.muted.opacity(0.6))
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(canSend ? Theme.violetLight : Theme.surfaceHigh))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                }
+                .padding(.leading, 12)
+                .padding(.trailing, 6)
+                .frame(minHeight: 36)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.surfaceHigh))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(fieldFocused ? Theme.violetLight.opacity(0.6) : Theme.violetLight.opacity(0.25), lineWidth: 1))
             }
         }
         .padding(14)
@@ -353,6 +395,40 @@ private struct QuestionCard: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.ink))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.violetLight.opacity(0.45), lineWidth: 1))
         .shadow(color: Theme.violet.opacity(0.3), radius: 16)
+        .task {
+            // Text-only questions: put the cursor in the field right away.
+            if question.choices.isEmpty && question.textPlaceholder != nil {
+                try? await Task.sleep(for: .milliseconds(200))
+                fieldFocused = true
+            }
+        }
+    }
+
+    private func send() {
+        let text = typed.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        answer(Question.Choice(option: Question.typedOption, label: text))
+    }
+}
+
+/// Header for the task's own group when several sites run in parallel.
+private struct GroupHeader: View {
+    let icon: AnyView
+    let title: String
+    let status: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            icon.frame(width: 16, height: 16)
+            Text(title).font(Theme.figtree(13.5, weight: 700)).foregroundStyle(.white)
+            Text(status).font(Theme.figtree(12, weight: 500)).foregroundStyle(Theme.muted)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.03)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .padding(.bottom, 4)
     }
 }
 
