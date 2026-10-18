@@ -10,6 +10,7 @@ public enum Theme {
     static let surfaceHigh = Color(hex: 0x1D1D2A)
     static let line = Color(hex: 0x24243A)
     static let muted = Color(hex: 0x9A9AB0)
+    static let danger = Color(hex: 0xFF6B81)
 
     public static func registerFonts() {
         for name in ["Figtree", "Figtree-Italic"] {

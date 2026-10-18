@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AgentPanel: View {
     @Binding var draft: String
+    var enabled: Bool
     @State private var messages: [String] = []
     @FocusState private var focused: Bool
 
@@ -12,7 +13,9 @@ struct AgentPanel: View {
 
             Rectangle().fill(Theme.line).frame(height: 1)
 
-            if messages.isEmpty {
+            if !enabled {
+                Spacer()
+            } else if messages.isEmpty {
                 emptyState
             } else {
                 ScrollView {
@@ -35,19 +38,19 @@ struct AgentPanel: View {
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
-        .defaultFocus($focused, true)
-        .task {
-            // The window isn't key yet on first appear, so focus once it is.
+        .task(id: enabled) {
+            // Also runs on first appear, before the window is key, hence the short wait.
+            guard enabled else { return }
             try? await Task.sleep(for: .milliseconds(300))
             focused = true
         }
     }
 
-    private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { enabled && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask BrowseFast to do anything…", text: $draft, axis: .vertical)
+            TextField(enabled ? "Ask BrowseFast to do anything…" : "Add your API keys to start", text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.figtree(15, weight: 500))
                 .foregroundStyle(.white)
@@ -56,6 +59,7 @@ struct AgentPanel: View {
                 .focused($focused)
                 .onSubmit(send)
                 .padding(.vertical, 5)
+                .disabled(!enabled)
 
             Button(action: send) {
                 Image(systemName: "arrow.up")
@@ -78,7 +82,9 @@ struct AgentPanel: View {
                 .strokeBorder(focused ? Theme.violetLight.opacity(0.55) : Theme.line, lineWidth: 1)
         )
         .shadow(color: focused ? Theme.violet.opacity(0.35) : .clear, radius: 14)
+        .opacity(enabled ? 1 : 0.45)
         .animation(.easeOut(duration: 0.2), value: focused)
+        .animation(.easeOut(duration: 0.3), value: enabled)
     }
 
     private var emptyState: some View {

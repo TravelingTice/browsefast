@@ -1,7 +1,7 @@
 import SwiftUI
 
-struct BrowserPane: View {
-    var onPick: (String) -> Void
+struct BrowserPane<Content: View>: View {
+    @ViewBuilder var content: Content
 
     var body: some View {
         ZStack {
@@ -10,26 +10,33 @@ struct BrowserPane: View {
             RadialGradient(colors: [Theme.violet.opacity(0.30), .clear], center: .center, startRadius: 0, endRadius: 420)
                 .offset(y: -40)
             RadialGradient(colors: [Theme.violetLight.opacity(0.07), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 600)
-
-            VStack(spacing: 0) {
-                LogoMark()
-                    .frame(width: 96, height: 96)
-                    .shadow(color: Theme.violet.opacity(0.7), radius: 40)
-                    .shadow(color: Theme.violetLight.opacity(0.25), radius: 12)
-                    .padding(.bottom, 36)
-
-                Text("Type what you want to do on the web")
-                    .font(Theme.figtree(30, weight: 700))
-                    .tracking(-0.6)
-                    .foregroundStyle(.white)
-                    .padding(.bottom, 18)
-
-                SuggestionTicker(onPick: onPick)
-            }
-            .offset(y: -20)
+            content
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+    }
+}
+
+struct IntroView: View {
+    var onPick: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            LogoMark()
+                .frame(width: 96, height: 96)
+                .shadow(color: Theme.violet.opacity(0.7), radius: 40)
+                .shadow(color: Theme.violetLight.opacity(0.25), radius: 12)
+                .padding(.bottom, 36)
+
+            Text("Type what you want to do on the web")
+                .font(Theme.figtree(30, weight: 700))
+                .tracking(-0.6)
+                .foregroundStyle(.white)
+                .padding(.bottom, 18)
+
+            SuggestionTicker(onPick: onPick)
+        }
+        .offset(y: -20)
     }
 }
 
