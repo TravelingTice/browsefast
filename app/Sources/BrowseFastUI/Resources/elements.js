@@ -20,9 +20,21 @@
     return t.length > max ? t.slice(0, max - 1) + '…' : t;
   };
 
+  // Apps (React etc.) often make plain divs clickable with no markup hint except a pointer cursor.
+  // The cursor is inherited, so only the outermost element of a pointer area counts.
+  function startsPointerArea(el) {
+    if (getComputedStyle(el).cursor !== 'pointer') return false;
+    const parent = el.parentElement;
+    return !parent || getComputedStyle(parent).cursor !== 'pointer';
+  }
+
   function collect(root, out) {
-    root.querySelectorAll(INTERACTIVE).forEach(el => out.push(el));
-    root.querySelectorAll('*').forEach(el => { if (el.shadowRoot) collect(el.shadowRoot, out); });
+    const seen = new Set();
+    root.querySelectorAll(INTERACTIVE).forEach(el => { seen.add(el); out.push(el); });
+    root.querySelectorAll('*').forEach(el => {
+      if (!seen.has(el) && startsPointerArea(el)) out.push(el);
+      if (el.shadowRoot) collect(el.shadowRoot, out);
+    });
     return out;
   }
 
@@ -46,7 +58,26 @@
     return 'button'; // tabindex/onclick elements behave like buttons
   }
 
+  // A bare "27" or "+" says little; nearby markup often has the real meaning (a calendar's data-date, a title).
+  function context(el) {
+    let node = el;
+    for (let i = 0; i < 4 && node; i++, node = node.parentElement) {
+      for (const attr of ['data-date', 'datetime', 'aria-label', 'title']) {
+        const v = node.getAttribute && node.getAttribute(attr);
+        if (v && clean(v) !== clean(el.innerText)) return clean(v.replace(/ \d\d:\d\d:\d\d.*$/, ''), 40);
+      }
+    }
+    return '';
+  }
+
   function label(el) {
+    const own = ownLabel(el);
+    if (own.length > 3) return own;
+    const extra = context(el);
+    return extra ? (own ? `${own} (${extra})` : extra) : own;
+  }
+
+  function ownLabel(el) {
     const by = el.getAttribute('aria-labelledby');
     if (by) {
       const t = by.split(/\s+/).map(id => document.getElementById(id)?.innerText || '').join(' ');
@@ -86,7 +117,8 @@
 
   function states(el) {
     const s = [];
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') s.push('disabled');
+    if (el.disabled || el.closest('[aria-disabled="true"], .is-disabled, .disabled')) s.push('disabled');
+    if (el.tagName === 'A' && !clean(el.innerText) && el.querySelector('img, svg')) s.push('image');
     if (el.checked || el.getAttribute('aria-checked') === 'true') s.push('checked');
     if (el.getAttribute('aria-selected') === 'true') s.push('selected');
     const expanded = el.getAttribute('aria-expanded');
@@ -159,7 +191,13 @@
       if (el.tagName === 'INPUT' && !['text', 'checkbox', 'radio', 'submit', 'button'].includes(el.type)) entry.inputType = el.type;
       if (el.tagName === 'A' && el.href) {
         try {
-          const u = new URL(el.href);
+          let u = new URL(el.href);
+          // Google wraps results in /url?q=… and /imgres?imgrefurl=…; show where the link really leads.
+          const target = u.searchParams.get('imgrefurl') || u.searchParams.get('url') || u.searchParams.get('q');
+          if (/^(\/url|\/imgres)/.test(u.pathname) && target && /^https?:/.test(target)) {
+            entry.via = u.pathname === '/imgres' ? 'image preview of' : 'redirect to';
+            u = new URL(target);
+          }
           // Long query strings are mostly tracking ids; they cost tokens without helping the decision.
           const query = u.search.length <= 40 ? u.search : (u.search ? '?…' : '');
           entry.href = (u.host === location.host ? '' : u.host) + u.pathname + query;
@@ -183,5 +221,116 @@
     });
   }
 
-  window.__browsefast = { snapshot, elements: [] };
+  // Safety: BrowseFast is read-only for now, so it never commits a booking, purchase or personal details.
+  const COMMIT = /\b(confirm\w*|bevestig\w*|pay|payment|betaal\w*|checkout|check out|afreken\w*|place order|bestel\w*|buy|kopen|koop|purchase|book now|boek nu|reserveer nu|subscribe|abonneer\w*)\b/i;
+  const personalForm = form => !!form && !!form.querySelector(
+    'input[type="password"], input[type="email"], input[type="tel"], [autocomplete^="cc-"]');
+
+  function blockedReason(el) {
+    const text = clean(el.innerText || el.value || el.getAttribute('aria-label') || '');
+    if (COMMIT.test(text)) return `"${text}" looks like it books, buys or confirms something`;
+    const isSubmit = (el.tagName === 'BUTTON' && (el.getAttribute('type') || 'submit') === 'submit')
+      || (el.tagName === 'INPUT' && el.type === 'submit');
+    if (isSubmit && personalForm(el.form)) return 'this form asks for personal details';
+    return null;
+  }
+
+  function setValue(el, text) {
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.focus();
+    if (el.isContentEditable) {
+      document.execCommand('selectAll');
+      document.execCommand('insertText', false, text);
+      return;
+    }
+    // Use the native setter so frameworks like React notice the change.
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function pressEnter(el) {
+    const form = el.form || el.closest('form');
+    if (personalForm(form)) return 'this form asks for personal details';
+    el.focus();
+    const init = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    const notHandled = el.dispatchEvent(new KeyboardEvent('keydown', init));
+    el.dispatchEvent(new KeyboardEvent('keypress', init));
+    el.dispatchEvent(new KeyboardEvent('keyup', init));
+    if (notHandled && form) form.requestSubmit ? form.requestSubmit() : form.submit();
+    return null;
+  }
+
+  // cmd: { kind: 'click' | 'type' | 'submit' | 'scroll' | 'back', id?, text?, direction? }
+  function act(cmd) {
+    const done = (extra = {}) => JSON.stringify({ ok: true, ...extra });
+    const fail = (error, extra = {}) => JSON.stringify({ ok: false, error, ...extra });
+    const el = cmd.id ? window.__browsefast.elements[cmd.id - 1] : null;
+    if (cmd.id && (!el || !el.isConnected)) return fail('That element is no longer on the page');
+
+    switch (cmd.kind) {
+      case 'click': {
+        const blocked = blockedReason(el);
+        if (blocked) return fail(blocked, { blocked: true });
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        if (el.focus) el.focus({ preventScroll: true });
+        el.click();
+        return done();
+      }
+      case 'type':
+        setValue(el, cmd.text || '');
+        return done();
+      case 'submit': {
+        const blocked = pressEnter(el);
+        return blocked ? fail(blocked, { blocked: true }) : done();
+      }
+      case 'scroll':
+        window.scrollBy({ top: (cmd.direction === 'up' ? -0.8 : 0.8) * innerHeight });
+        return done();
+      case 'back':
+        history.back();
+        return done();
+    }
+    return fail(`Unknown action ${cmd.kind}`);
+  }
+
+  const pageText = () => (document.body ? document.body.innerText : '')
+    .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim().slice(0, 12000);
+
+  // Resolves once the DOM hasn't changed for quietMs (or after maxMs), plus a beat for CSS transitions.
+  function waitForQuiet(quietMs = 350, maxMs = 3000) {
+    return new Promise(resolve => {
+      let timer;
+      const finish = () => { observer.disconnect(); clearTimeout(cap); setTimeout(resolve, 250); };
+      const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(finish, quietMs); });
+      observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      timer = setTimeout(finish, quietMs);
+      const cap = setTimeout(finish, maxMs);
+    });
+  }
+
+  // Closes a cookie consent banner, preferring the privacy-friendly button. Returns the button text, or null.
+  const COOKIE_REJECT = /^(only necessary|necessary only|use necessary cookies only|reject all|reject|decline|weigeren|alles weigeren|alleen noodzakelijke?( cookies)?|noodzakelijke cookies)$/i;
+  const COOKIE_ACCEPT = /^(accept all|accept|allow all|agree|i agree|ok|got it|alles accepteren|accepteren|akkoord|toestaan|alle cookies accepteren)$/i;
+  function dismissCookies() {
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, input[type="button"], input[type="submit"]'));
+    for (const pattern of [COOKIE_REJECT, COOKIE_ACCEPT]) {
+      for (const b of buttons) {
+        const text = clean(b.innerText || b.value || b.getAttribute('aria-label'), 60);
+        if (!pattern.test(text)) continue;
+        const rect = b.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        let box = b.parentElement, isConsent = false;
+        for (let i = 0; i < 5 && box && box !== document.body; i++, box = box.parentElement) {
+          const hint = `${box.id} ${box.className} ${box.getAttribute('aria-label') || ''} ${(box.innerText || '').slice(0, 500)}`;
+          if (/cookie|consent|gdpr/i.test(hint)) { isConsent = true; break; }
+        }
+        if (isConsent) { b.click(); return text; }
+      }
+    }
+    return null;
+  }
+
+  window.__browsefast = { snapshot, act, pageText, waitForQuiet, dismissCookies, elements: [] };
 })();

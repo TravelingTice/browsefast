@@ -12,6 +12,7 @@ struct PageSnapshot: Decodable {
         var states: [String]?
         var inputType: String?
         var href: String?
+        var via: String?
         var options: [String]?
     }
 
@@ -44,7 +45,7 @@ struct PageSnapshot: Decodable {
             line += " \"\(e.label)\""
             if let v = e.value { line += " value=\"\(v)\"" }
             if let o = e.options, !o.isEmpty { line += " options=[\(o.map { "\"\($0)\"" }.joined(separator: ", "))]" }
-            if let h = e.href { line += " → \(h)" }
+            if let h = e.href { line += " → " + (e.via.map { "\($0) " } ?? "") + h }
             if let s = e.states, !s.isEmpty { line += " " + s.joined(separator: " ") }
             return line
         }

@@ -42,11 +42,18 @@ extension Color {
     }
 }
 
+extension Image {
+    /// A PNG from the bundled Resources folder.
+    init(bundled name: String) {
+        self.init(nsImage: NSImage(contentsOf: Bundle.module.url(forResource: name, withExtension: "png")!)!)
+    }
+}
+
 struct LogoMark: View {
     var color: Color = Theme.violetLight
 
     var body: some View {
-        Image(nsImage: NSImage(contentsOf: Bundle.module.url(forResource: "logo", withExtension: "png")!)!)
+        Image(bundled: "logo")
             .renderingMode(.template)
             .resizable()
             .interpolation(.high)

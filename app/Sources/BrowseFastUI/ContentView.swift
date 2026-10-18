@@ -5,13 +5,17 @@ public struct ContentView: View {
     @State private var claudeKey = KeyStore.read(.claude) ?? ""
     @State private var typesafeKey = KeyStore.read(.typesafe) ?? ""
     @State private var started = KeyStore.read(.claude) != nil && KeyStore.read(.typesafe) != nil
+    @State private var run = AgentRun()
 
     public init() {}
 
     public var body: some View {
         HStack(spacing: 10) {
             BrowserPane {
-                if started {
+                if run.task != nil {
+                    BrowserView(webView: run.browser.active?.webView)
+                        .transition(.opacity)
+                } else if started {
                     IntroView { draft = $0 }
                         .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 } else {
@@ -19,11 +23,17 @@ public struct ContentView: View {
                         .transition(.opacity.combined(with: .scale(scale: 1.03)))
                 }
             }
-            AgentPanel(draft: $draft, enabled: started)
+            AgentPanel(draft: $draft, enabled: started, run: run)
                 .frame(width: 380)
         }
         .padding([.horizontal, .bottom], 10)
         .padding(.top, 38)
+        .overlay(alignment: .topLeading) {
+            // Sits in the title bar strip, right of the traffic lights.
+            TabBar(browser: run.browser)
+                .frame(height: 38)
+                .padding(.leading, 84)
+        }
         .background(Theme.ink)
         .ignoresSafeArea()
         .onAppear {

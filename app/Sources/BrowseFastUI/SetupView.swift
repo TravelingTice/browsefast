@@ -46,7 +46,7 @@ struct SetupView: View {
                     focus: $focus,
                     error: claudeError
                 ) {
-                    Image(nsImage: NSImage(contentsOf: Bundle.module.url(forResource: "claude", withExtension: "png")!)!)
+                    Image(bundled: "claude")
                         .resizable()
                         .interpolation(.high)
                         .frame(width: 18, height: 18)
@@ -58,7 +58,7 @@ struct SetupView: View {
                          placeholder: "Paste your TypeSafe key",
                          text: $typesafeKey, field: .typesafe, focus: $focus,
                          error: typesafeError) {
-                    Image(nsImage: NSImage(contentsOf: Bundle.module.url(forResource: "typesafe", withExtension: "png")!)!)
+                    Image(bundled: "typesafe")
                         .resizable()
                         .interpolation(.high)
                         .frame(width: 18, height: 18)
