@@ -25,6 +25,7 @@ final class TabAgent: Identifiable {
     @ObservationIgnored private let goals: [Plan.Goal]
 
     static let maxActions = 25
+    static let maxScrollsPerPage = 4
     static let jevConfidenceFloor = 0.5
 
     private var webView: WKWebView { tab.webView }
@@ -84,6 +85,9 @@ final class TabAgent: Identifiable {
             // option does rather than its number. Single-page apps keep one URL, so the URL alone isn't enough.
             var tried: Set<String> = []
             var visits: [String: Int] = [:]
+            var scrolls: [String: Int] = [:]
+            var backwards: Set<String> = []          // "host|label" of clicks that led back to an earlier page state
+            var lastClick: String?
             var lastPage = ""
             var stopReason: String?
 
@@ -98,6 +102,12 @@ final class TabAgent: Identifiable {
                 let goalText = pendingTexts.first ?? ""
                 let page = try await snapshot()
                 let pageState = "\(page.url)|\(page.elementList.hashValue)"
+                if let click = lastClick, visits[pageState, default: 0] > 0 {
+                    // That click brought back a page we'd already seen (like a wizard's "Start"): don't use it again.
+                    backwards.insert(click)
+                    Log.write(tag, "Click '\(click)' led back to an earlier page; not using it again")
+                }
+                lastClick = nil
                 visits[pageState, default: 0] += 1
                 if page.url + page.title != lastPage {
                     history.append("Now on: \(page.title.isEmpty ? page.url : page.title) (\(URL(string: page.url)?.host() ?? page.url))")
@@ -108,14 +118,45 @@ final class TabAgent: Identifiable {
                     steps.add(.browseFast, stopReason!, status: .failed)
                     break work
                 }
+                if page.captcha {
+                    // The agent can't (and shouldn't) solve human checks; hand it to the user in this tab.
+                    let checkStep = steps.begin(.browseFast, "This site wants to check you're human")
+                    steps.finish(checkStep, "This site wants to check you're human. Solve it in this tab, then continue.")
+                    Log.write(tag, "Human check (CAPTCHA) on \(page.url), asking the user")
+                    let picked = try await questions.ask(Question(
+                        text: "\(self.name) is asking to check you're human. Open its tab, solve the check, then continue.",
+                        choices: [.init(option: "continue", label: "I've solved it, continue"), .init(option: "skip", label: "Skip this site")]))
+                    if picked.option == "skip" {
+                        stopReason = "Skipped: the site asked for a human check"
+                        steps.add(.you, "You skipped this site", status: .failed)
+                        break work
+                    }
+                    steps.add(.you, "You solved the human check", status: .done)
+                    history.append("The user solved a human check on this site")
+                    visits[pageState] = 0
+                    actions -= 1
+                    try await settle()
+                    continue work
+                }
                 let looping = visits[pageState]! >= 3
                 if looping {
                     history.append("Loop warning: this exact page has come back \(visits[pageState]!) times. Choices already made stay made; don't redo them, move forward instead.")
                 }
                 let onSearchResults = Prompts.isSearchResults(page.url)
+                // Scrolling isn't covered by the loop guard (every scroll changes the page), so cap it per page.
+                let scrollKey = URL(string: page.url).map { ($0.host() ?? "") + $0.path } ?? page.url
+                let mayScroll = scrolls[scrollKey, default: 0] < Self.maxScrollsPerPage
                 let options = Prompts.options(for: page, goalText: goalText)
                     .filter { !tried.contains("\(pageState)|\($0.description)") || $0.key.hasPrefix("scroll") || $0.key == "task_done" }
-                    + (onSearchResults ? [] : [("ask_user", "Ask the user: the page needs a choice the task doesn't specify (like a service, a person, gender, a date or a time)")])
+                    .filter { mayScroll || !$0.key.hasPrefix("scroll") }
+                    .filter { option in
+                        guard let id = Prompts.parse(option.key).id, let e = page.elements.first(where: { $0.id == id }) else { return true }
+                        if backwards.contains("\(URL(string: page.url)?.host() ?? "")|\(e.label)") { return false }
+                        // On search results, only actual results: links leaving the search engine.
+                        return !onSearchResults || option.key.hasPrefix("open_") || !option.key.hasPrefix("click_") || e.via != nil
+                            || (e.href.map { !$0.hasPrefix("/") && !$0.contains("google.") } ?? false)
+                    }
+                    + (onSearchResults || tried.contains("\(pageState)|ask") ? [] : [("ask_user", "Ask the user: the page needs a choice the task doesn't specify (like a service, a person, gender, a date or a time)")])
                 let state = Prompts.state(task: contextualTask, plan: planLines, goalText: goalText,
                                           history: history, tabs: "", page: page)
 
@@ -149,7 +190,7 @@ final class TabAgent: Identifiable {
                     if !onSearchResults { steps.update(step, decider: .claude, text: "Thinking about the next step…") }
                     Log.write(tag, "Handing this step to Claude: \(reason)")
                     let schema = Prompts.decisionSchema(keys: options.map(\.key).filter { $0 != "stuck" })
-                    let visibleText = (try? await webView.evaluateJavaScript("window.__browsefast.pageText()") as? String) ?? ""
+                    let visibleText = (try? await webView.js("window.__browsefast.pageText()") as? String) ?? ""
                     let prompt = (onSearchResults ? Prompts.searchResultsHint + "\n\n" : "") + state
                         + "\n\nPage text (start):\n" + String(visibleText.prefix(4000))
                         + "\n\nOptions:\n" + options.filter { $0.key != "stuck" }
@@ -200,6 +241,15 @@ final class TabAgent: Identifiable {
                     history.append("Filled in '\(text ?? "")' in \(name)")
                     if text == pendingTexts.first { pendingTexts.removeFirst() }
 
+                case "open":
+                    guard let element, let target = element.target.flatMap(URL.init(string:)) else {
+                        steps.fail(step, "Couldn't find that link"); continue work
+                    }
+                    webView.load(URLRequest(url: target))
+                    steps.finish(step, decider: decider, "Opened \(target.host() ?? target.absoluteString)")
+                    history.append("Opened \(target.absoluteString)")
+                    try await settle()
+
                 case "submit":
                     guard let element else { steps.fail(step, "Couldn't find the field"); continue work }
                     if try await perform(["kind": "submit", "id": element.id], step: step,
@@ -210,6 +260,7 @@ final class TabAgent: Identifiable {
 
                 case "click":
                     guard let element else { steps.fail(step, "Couldn't find what to click"); continue work }
+                    lastClick = "\(URL(string: page.url)?.host() ?? "")|\(element.label)"
                     let before = tab.id
                     if try await perform(["kind": "click", "id": element.id], step: step,
                                          success: "Clicked \(name)", decider: decider) == .blocked {
@@ -241,7 +292,8 @@ final class TabAgent: Identifiable {
                     guard !choices.isEmpty else {
                         // Usually the page is still rendering the options (a calendar animating in); look again.
                         steps.remove(step...askStep)
-                        Log.write(tag, "Nothing to ask about yet, looking at the page again")
+                        tried.insert("\(pageState)|ask")
+                        Log.write(tag, "Nothing to ask about here, looking at the page again without asking")
                         try await Task.sleep(for: .seconds(1))
                         continue work
                     }
@@ -273,6 +325,7 @@ final class TabAgent: Identifiable {
                     history.append("Asked the user '\(asked.value.question)', they chose '\(picked.label)' and it was clicked")
 
                 case "scroll_down", "scroll_up":
+                    scrolls[scrollKey, default: 0] += 1
                     let up = kind == "scroll_up"
                     try await perform(["kind": "scroll", "direction": up ? "up" : "down"], step: step,
                                       success: up ? "Scrolled up" : "Scrolled down", decider: decider)
@@ -290,7 +343,7 @@ final class TabAgent: Identifiable {
             // 3. Check what was found
             try Task.checkCancellation()
             let checkStep = steps.begin(.claude, "Checking what I found…")
-            let text = (try? await webView.evaluateJavaScript("window.__browsefast.pageText()") as? String) ?? ""
+            let text = (try? await webView.js("window.__browsefast.pageText()") as? String) ?? ""
             // Page text alone can't tell greyed-out options (like unavailable times) from real ones; the element list can.
             let finalElements = (try? await PageSnapshot.capture(from: webView))?.elementList ?? ""
             let prompt = "Task: \(contextualTask)\n\nWhat BrowseFast did:\n" + history.map { "- \($0)" }.joined(separator: "\n")
@@ -339,7 +392,7 @@ final class TabAgent: Identifiable {
         var attempt = 1
         while true {
             let all = Prompts.isSearchResults(webView.url?.absoluteString ?? "")
-            if let page = try? await PageSnapshot.capture(from: webView, all: all), !page.elements.isEmpty || attempt == 4 {
+            if let page = try? await PageSnapshot.capture(from: webView, all: all), !page.elements.isEmpty || page.captcha || attempt == 4 {
                 Log.write(tag.replacingOccurrences(of: "agent", with: "page"),
                           "Snapshot of \(page.url)\(attempt > 1 ? " (attempt \(attempt))" : ""): \(page.summary)",
                           details: page.elementList + (page.text.isEmpty ? "" : "\n--- text on screen ---\n" + page.text))
@@ -361,20 +414,18 @@ final class TabAgent: Identifiable {
             try await Task.sleep(for: .milliseconds(200))
             waited += 200
         }
-        _ = try? await webView.callAsyncJavaScript("await window.__browsefast.waitForQuiet(); return true",
-                                                   contentWorld: .page)
+        _ = try? await webView.asyncJS("await window.__browsefast.waitForQuiet(); return true", timeout: 5)
         // Cookie banners cover the page; closing them is plain code, no model needed.
-        if let button = try? await webView.evaluateJavaScript("window.__browsefast.dismissCookies()") as? String {
+        if let button = try? await webView.js("window.__browsefast.dismissCookies()") as? String {
             timeline.add(.browseFast, "Closed a cookie banner ('\(Prompts.short(button, 30))')", status: .done)
-            _ = try? await webView.callAsyncJavaScript("await window.__browsefast.waitForQuiet(); return true",
-                                                       contentWorld: .page)
+            _ = try? await webView.asyncJS("await window.__browsefast.waitForQuiet(); return true", timeout: 5)
         }
     }
 
     @discardableResult
     private func perform(_ command: [String: Any], step: Int, success: String, decider: Decider) async throws -> StepStatus {
         let json = String(data: try JSONSerialization.data(withJSONObject: command), encoding: .utf8)!
-        let raw = try await webView.evaluateJavaScript("window.__browsefast.act(\(json))") as? String ?? "{}"
+        let raw = try await webView.js("window.__browsefast.act(\(json))") as? String ?? "{}"
         let result = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
         Log.write(tag, "Action \(json) → \(raw)")
         if result["ok"] as? Bool == true {

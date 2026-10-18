@@ -116,7 +116,7 @@ final class TabDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     @MainActor private func loadFavicon(for webView: WKWebView) async {
         let js = "(document.querySelector('link[rel~=\"icon\"][href$=\".png\"], link[rel~=\"icon\"], link[rel=\"apple-touch-icon\"]') || {}).href || (location.origin + '/favicon.ico')"
-        guard let href = try? await webView.evaluateJavaScript(js) as? String, let url = URL(string: href),
+        guard let href = try? await webView.js(js) as? String, let url = URL(string: href),
               let (data, _) = try? await URLSession.shared.data(from: url),
               let image = NSImage(data: data), image.isValid else { return }
         tab?.favicon = image

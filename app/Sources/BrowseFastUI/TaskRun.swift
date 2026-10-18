@@ -28,6 +28,7 @@ final class TaskRun {
     @ObservationIgnored private(set) var answers: [String: String] = [:]
     @ObservationIgnored private(set) var userChoices: [String] = []
     @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private var runNumber = 0
 
     static let maxTabs = 4
 
@@ -41,13 +42,23 @@ final class TaskRun {
         userChoices = []
         timeline.reset()
         isRunning = true
+        runNumber += 1
+        let number = runNumber
         loop = Task {
             await coordinate(task)
-            isRunning = false
+            if runNumber == number { isRunning = false }
         }
     }
 
-    func stop() { loop?.cancel() }
+    /// Stops right away in the UI, even if a page or model call underneath is still finishing.
+    func stop() {
+        loop?.cancel()
+        guard isRunning else { return }
+        isRunning = false
+        timeline.markRunningAsFailed()
+        for agent in agents { agent.timeline.markRunningAsFailed() }
+        Log.write("task", "Stop pressed")
+    }
 
     func agent(for tab: BrowserTab) -> TabAgent? { agents.first { $0.tab.id == tab.id } }
 

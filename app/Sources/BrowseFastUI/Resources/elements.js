@@ -173,6 +173,19 @@
 
   // all: include elements above and below the viewport too (used on search results, where the right result
   // is often further down). Off-screen elements can't be checked for overlap, so that check is skipped for them.
+  // Human checks (CAPTCHAs) can't be solved by the agent; the user has to do it in the tab.
+  function isCaptcha() {
+    if (/captcha|challenge|are-you-human|px-captcha/i.test(location.href)) return true;
+    // Widgets only count when they're visible, sizeable and the page has little else: sites embed invisible
+    // reCAPTCHA on ordinary forms, and Google's small badge is always there.
+    const widgets = Array.from(document.querySelectorAll('iframe[src*="captcha"], iframe[src*="challenges.cloudflare.com"], iframe[title*="captcha" i], #px-captcha, .g-recaptcha, .h-captcha'))
+      .filter(el => !el.closest('.grecaptcha-badge'))
+      .filter(el => { const r = el.getBoundingClientRect(); return r.width >= 250 && r.height >= 60 && getComputedStyle(el).visibility !== 'hidden'; });
+    if (widgets.length && document.querySelectorAll('a[href], button, input, select').length < 25) return true;
+    const text = (document.body ? document.body.innerText : '').slice(0, 3000);
+    return /are you (a )?(human|robot)|verify (that )?you are (a )?human|ben je een (mens|robot)|bevestig dat je een mens bent|press (and|&) hold|robot check|ungewöhnlichen datenverkehr|unusual traffic/i.test(text);
+  }
+
   function snapshot(opts = {}) {
     const started = performance.now();
     const candidates = collect(document, []);
@@ -221,6 +234,7 @@
           if (/^(\/url|\/imgres)/.test(u.pathname) && target && /^https?:/.test(target)) {
             entry.via = u.pathname === '/imgres' ? 'image preview of' : 'redirect to';
             u = new URL(target);
+            entry.target = u.href;
           }
           // Long query strings are mostly tracking ids; they cost tokens without helping the decision.
           const query = u.search.length <= 40 ? u.search : (u.search ? '?…' : '');
@@ -240,6 +254,7 @@
       scroll: [Math.round(scrollY), Math.round(scrollMax)],
       elements,
       text: visibleText(),
+      captcha: isCaptcha(),
       offscreenAbove: above,
       offscreenBelow: below,
       ms: Math.round(performance.now() - started),
