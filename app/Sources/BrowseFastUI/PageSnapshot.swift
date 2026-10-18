@@ -21,6 +21,7 @@ struct PageSnapshot: Decodable {
     let viewport: [Int]
     let scroll: [Int]
     let elements: [Element]
+    let text: String
     let offscreenAbove: Int
     let offscreenBelow: Int
     let ms: Int
@@ -32,8 +33,8 @@ struct PageSnapshot: Decodable {
     )
 
     @MainActor
-    static func capture(from webView: WKWebView) async throws -> PageSnapshot {
-        let json = try await webView.evaluateJavaScript("window.__browsefast.snapshot()") as? String ?? ""
+    static func capture(from webView: WKWebView, all: Bool = false) async throws -> PageSnapshot {
+        let json = try await webView.evaluateJavaScript("window.__browsefast.snapshot({ all: \(all) })") as? String ?? ""
         return try JSONDecoder().decode(PageSnapshot.self, from: Data(json.utf8))
     }
 

@@ -106,6 +106,12 @@ struct AgentPanel: View {
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
+                    if let question = run.question {
+                        QuestionCard(question: question, answer: run.choose)
+                            .padding(.top, 10)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
                     if let answer = run.answer {
                         ResultCard(answer: answer)
                             .padding(.top, 10)
@@ -117,8 +123,10 @@ struct AgentPanel: View {
                 .padding(14)
                 .animation(.smooth(duration: 0.25), value: run.steps.count)
                 .animation(.smooth(duration: 0.25), value: run.answer)
+                .animation(.smooth(duration: 0.25), value: run.question?.id)
             }
             .onChange(of: run.steps.count) { withAnimation { proxy.scrollTo("end") } }
+            .onChange(of: run.question?.id) { withAnimation { proxy.scrollTo("end") } }
             .onChange(of: run.answer) { withAnimation { proxy.scrollTo("end") } }
         }
     }
@@ -200,6 +208,10 @@ struct DeciderIcon: View {
             case .claude: Image(bundled: "claude").resizable().interpolation(.high)
             case .jev: Image(bundled: "typesafe").resizable().interpolation(.high)
             case .browseFast: LogoMark()
+            case .you:
+                Image(systemName: "person.crop.circle.fill")
+                    .resizable()
+                    .foregroundStyle(.white.opacity(0.85))
             }
         }
         .frame(width: 16, height: 16)
@@ -211,7 +223,66 @@ struct DeciderIcon: View {
         case .claude: "Decided by Claude Haiku"
         case .jev: "Decided by Jev"
         case .browseFast: "BrowseFast"
+        case .you: "Your choice"
         }
+    }
+}
+
+private struct QuestionCard: View {
+    let question: AgentRun.Question
+    let answer: (AgentRun.Question.Choice) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.bubble.fill").font(.system(size: 11, weight: .bold))
+                Text("Your choice").font(Theme.figtree(12, weight: 700))
+            }
+            .foregroundStyle(Theme.violetLight)
+
+            Text(question.text)
+                .font(Theme.figtree(14.5, weight: 600))
+                .foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 6) {
+                ForEach(question.choices) { choice in
+                    ChoiceButton(label: choice.label) { answer(choice) }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.ink))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.violetLight.opacity(0.45), lineWidth: 1))
+        .shadow(color: Theme.violet.opacity(0.3), radius: 16)
+    }
+}
+
+private struct ChoiceButton: View {
+    let label: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(Theme.figtree(13, weight: 600))
+                .foregroundStyle(hovering ? Theme.ink : .white)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(hovering ? Theme.violetLight : Theme.surfaceHigh))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.violetLight.opacity(hovering ? 0 : 0.35), lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 

@@ -126,6 +126,9 @@
     if (el.required || el.getAttribute('aria-required') === 'true') s.push('required');
     if (el.readOnly) s.push('readonly');
     if (document.activeElement === el) s.push('focused');
+    // Wizards and tab strips mark the current step with a class rather than ARIA.
+    const marked = node => node && typeof node.className === 'string' && /(^|[\s-])(is-)?(active|current|selected)(\s|$)/.test(node.className);
+    if (el.getAttribute('aria-current') || marked(el) || marked(el.parentElement)) s.push('current');
     return s;
   }
 
@@ -149,7 +152,28 @@
     return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
   }
 
-  function snapshot() {
+  // The text currently on screen, top to bottom, so the agent can tell when what it's looking for is visible.
+  function visibleText(max = 1500) {
+    const out = [];
+    let total = 0, last = '';
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT,
+      { acceptNode: n => n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+    while (walker.nextNode() && total < max) {
+      const el = walker.currentNode.parentElement;
+      if (!el || ['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(el.tagName)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.bottom <= 0 || r.top >= innerHeight) continue;
+      const style = getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') continue;
+      const t = clean(walker.currentNode.nodeValue, 200);
+      if (t && t !== last) { out.push(t); total += t.length + 1; last = t; }
+    }
+    return out.join('\n').slice(0, max);
+  }
+
+  // all: include elements above and below the viewport too (used on search results, where the right result
+  // is often further down). Off-screen elements can't be checked for overlap, so that check is skipped for them.
+  function snapshot(opts = {}) {
     const started = performance.now();
     const candidates = collect(document, []);
     const accepted = new Set();
@@ -160,10 +184,10 @@
       if (accepted.has(el)) continue;
       const rect = el.getBoundingClientRect();
       if (!isShown(el, rect)) continue;
-      if (rect.bottom <= 0) { above++; continue; }
-      if (rect.top >= innerHeight) { below++; continue; }
+      const offscreen = rect.bottom <= 0 || rect.top >= innerHeight;
+      if (offscreen && !opts.all) { if (rect.bottom <= 0) above++; else below++; continue; }
       if (rect.right <= 0 || rect.left >= innerWidth) continue;
-      if (!isOnTop(el, rect)) continue;
+      if (!offscreen && !isOnTop(el, rect)) continue;
 
       // Skip a control nested in an accepted one that covers the same area (e.g. <a><button>).
       let parent = el.parentElement, duplicate = false;
@@ -215,6 +239,7 @@
       viewport: [innerWidth, innerHeight],
       scroll: [Math.round(scrollY), Math.round(scrollMax)],
       elements,
+      text: visibleText(),
       offscreenAbove: above,
       offscreenBelow: below,
       ms: Math.round(performance.now() - started),
