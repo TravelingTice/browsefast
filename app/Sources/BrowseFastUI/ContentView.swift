@@ -26,11 +26,15 @@ public struct ContentView: View {
         .padding(.top, 38)
         .background(Theme.ink)
         .ignoresSafeArea()
+        .onAppear {
+            Log.write("setup", started ? "Saved keys found in the Keychain, skipping setup" : "No saved keys, showing setup screen")
+        }
     }
 
     private func start() {
-        KeyStore.save(claudeKey.trimmingCharacters(in: .whitespaces), for: .claude)
-        KeyStore.save(typesafeKey.trimmingCharacters(in: .whitespaces), for: .typesafe)
+        let saved = KeyStore.save(claudeKey.trimmingCharacters(in: .whitespaces), for: .claude)
+            && KeyStore.save(typesafeKey.trimmingCharacters(in: .whitespaces), for: .typesafe)
+        Log.write("keys", saved ? "Both keys saved to the Keychain" : "Saving keys to the Keychain failed")
         withAnimation(.smooth(duration: 0.5)) { started = true }
     }
 }

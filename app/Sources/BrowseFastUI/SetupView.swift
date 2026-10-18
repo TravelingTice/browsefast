@@ -101,10 +101,13 @@ struct SetupView: View {
     private func start() {
         guard canStart else { return }
         checking = true
+        Log.write("keys", "Checking API keys with Anthropic and TypeSafe")
         Task {
             async let claude = KeyValidator.checkClaude(claudeKey.trimmingCharacters(in: .whitespaces))
             async let typesafe = KeyValidator.checkTypeSafe(typesafeKey.trimmingCharacters(in: .whitespaces))
             let (c, t) = await (claude, typesafe)
+            Log.write("keys", c.map { "Claude key rejected: \($0)" } ?? "Claude key accepted")
+            Log.write("keys", t.map { "TypeSafe key rejected: \($0)" } ?? "TypeSafe key accepted")
             checking = false
             withAnimation(.easeOut(duration: 0.2)) {
                 claudeError = c

@@ -19,8 +19,10 @@ Requires macOS 15+ and Xcode 26 (Swift 6).
 
 ```sh
 cd app
-swift run
+./run.sh
 ```
+
+`run.sh` builds and signs the app with your Apple Development certificate. Without that, each rebuild looks like a new app to the Keychain and macOS asks for your password every launch.
 
 You can also open `app/Package.swift` in Xcode. Use the `BrowseFastUI` scheme for SwiftUI previews and `BrowseFast` to run the app.
 
@@ -32,6 +34,14 @@ python3 -m http.server 4747
 ```
 
 Then open http://localhost:4747.
+
+## Logs
+
+Every run writes a timestamped log to `~/Library/Logs/BrowseFast/session.log`. It covers session starts, API key checks, page loads, and the numbered element list the agent sees on each page. API keys and password fields are never logged. Read it when something behaves unexpectedly:
+
+```sh
+tail -n 100 ~/Library/Logs/BrowseFast/session.log
+```
 
 ## Brand
 

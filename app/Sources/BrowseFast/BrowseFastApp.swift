@@ -5,7 +5,10 @@ import BrowseFastUI
 struct BrowseFastApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    init() { Theme.registerFonts() }
+    init() {
+        Log.startSession()
+        Theme.registerFonts()
+    }
 
     var body: some Scene {
         WindowGroup {
