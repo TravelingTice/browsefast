@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager / Xcode
+.build/
+.swiftpm/xcode/xcuserdata/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# Local tooling
+.playwright-mcp/
+.claude/
+.env
+.env.*
+
+# Research material with third-party trademarks, kept local
+browser-logos.jpg

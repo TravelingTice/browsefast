@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrowseFast Brand</title>
+<link rel="icon" href="logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,400;0,500;0,600;1,900&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: dark;
+  --violet-light: #9B74FF;
+  --violet: #5201FC;
+  --ink: #0B0B12;
+  --surface: #15151F;
+  --text: #FFFFFF;
+  --muted: #9A9AB0;
+  --line: #24243A;
+  --mist: #F4F0FF;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font: 500 16px/1.5 Figtree, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+.lockup {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  white-space: nowrap;
+  --mark: var(--violet-light);
+  --word: #fff;
+  --accent: var(--violet-light);
+  color: var(--word);
+}
+.lockup .mark {
+  width: 0.88em;
+  height: 0.88em;
+  margin-right: 0.15em;
+  transform: translateY(-0.02em);
+  background: var(--mark);
+  -webkit-mask: url(logo.png) center / contain no-repeat;
+  mask: url(logo.png) center / contain no-repeat;
+  flex: none;
+}
+.lockup .fast { color: var(--accent); padding-right: 0.06em; }
+.lockup.on-light { --mark: var(--violet); --word: var(--ink); --accent: var(--violet); }
+.lockup.on-violet { --mark: #fff; --word: #fff; --accent: #fff; }
+.lockup.mono { --mark: #fff; --accent: #fff; }
+
+header.hero {
+  background:
+    radial-gradient(900px 420px at 50% -5%, rgba(82, 1, 252, .28), transparent 70%),
+    var(--ink);
+  padding: 120px 0 112px;
+  text-align: center;
+}
+.hero .lockup { font-size: clamp(48px, 11vw, 128px); }
+.tagline {
+  margin: 28px auto 0;
+  max-width: 40ch;
+  text-wrap: balance;
+  color: var(--muted);
+  font-size: clamp(17px, 2.2vw, 21px);
+}
+
+section { padding: 72px 0; border-top: 1px solid var(--line); }
+.eyebrow {
+  font: 500 12px/1 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--violet-light);
+  margin: 0 0 12px;
+}
+h2 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 32px; }
+
+.variants { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.tile {
+  margin: 0;
+  border-radius: 20px;
+  min-height: 200px;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+  position: relative;
+}
+.tile .lockup { font-size: clamp(28px, 4.4vw, 52px); }
+.tile figcaption {
+  position: absolute; left: 20px; bottom: 14px;
+  font: 500 11px/1 "JetBrains Mono", monospace; letter-spacing: .08em; text-transform: uppercase;
+  opacity: .6;
+}
+.t-ink { background: var(--ink); border: 1px solid var(--line); }
+.t-light { background: #fff; color: var(--ink); }
+.t-violet { background: var(--violet); }
+.t-surface { background: var(--surface); }
+.icon-row { display: flex; align-items: flex-end; gap: 28px; flex-wrap: wrap; }
+.icon-row .mark-only {
+  background: var(--violet-light);
+  -webkit-mask: url(logo.png) center / contain no-repeat;
+  mask: url(logo.png) center / contain no-repeat;
+}
+
+.swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.swatch {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  overflow: hidden;
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.swatch:hover { transform: translateY(-2px); box-shadow: 0 12px 34px -12px rgba(155, 116, 255, .4); }
+.swatch:focus-visible { outline: 2px solid var(--violet-light); outline-offset: 3px; }
+.chip { height: 150px; display: flex; align-items: flex-end; padding: 16px; font: 500 12px/1 "JetBrains Mono", monospace; }
+.meta { padding: 16px 18px 18px; }
+.meta .role { font: 500 11px/1 "JetBrains Mono", monospace; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.meta .name { font-size: 19px; font-weight: 600; margin: 8px 0 2px; }
+.meta .hex { font: 500 20px/1.3 "JetBrains Mono", monospace; letter-spacing: -.01em; }
+.meta .rgb { font: 500 12px/1.4 "JetBrains Mono", monospace; color: var(--muted); }
+.meta .use { margin-top: 10px; font-size: 14px; color: var(--muted); }
+.copied .hex::after { content: "  copied"; color: var(--violet-light); font-size: 12px; }
+
+.type { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.type .card { border: 1px solid var(--line); background: var(--surface); border-radius: 20px; padding: 28px; }
+.type .sample-display { font-weight: 900; font-style: italic; letter-spacing: -0.045em; font-size: 56px; line-height: 1; }
+.type .sample-body { font-size: 22px; line-height: 1.4; }
+.type .spec { margin-top: 18px; font: 500 12px/1.6 "JetBrains Mono", monospace; color: var(--muted); }
+
+footer { padding: 48px 0 64px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+
+@media (max-width: 640px) {
+  header.hero { padding: 80px 0 72px; }
+  section { padding: 56px 0; }
+  .wrap { padding: 0 16px; }
+  .type, .variants { grid-template-columns: 1fr; }
+  .tile .lockup { font-size: clamp(30px, 10vw, 44px); }
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="lockup" role="img" aria-label="BrowseFast logo"><span class="mark"></span>Browse<span class="fast">Fast</span></div>
+    <p class="tagline">The agentic browser that decides as fast as you think.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">01 · Logo</p>
+    <h2>Lockup</h2>
+    <div class="variants">
+      <figure class="tile t-ink"><div class="lockup"><span class="mark"></span>Browse<span class="fast">Fast</span></div><figcaption>Primary · on ink</figcaption></figure>
+      <figure class="tile t-light"><div class="lockup on-light"><span class="mark"></span>Browse<span class="fast">Fast</span></div><figcaption>Secondary · on light</figcaption></figure>
+      <figure class="tile t-violet"><div class="lockup on-violet"><span class="mark"></span>Browse<span class="fast">Fast</span></div><figcaption>On violet</figcaption></figure>
+      <figure class="tile t-surface"><div class="lockup mono"><span class="mark"></span>Browse<span class="fast">Fast</span></div><figcaption>Mono</figcaption></figure>
+    </div>
+    <div class="icon-row" style="margin-top:40px">
+      <span class="mark-only" style="width:128px;height:128px"></span>
+      <span class="mark-only" style="width:64px;height:64px"></span>
+      <span class="mark-only" style="width:32px;height:32px"></span>
+      <span class="mark-only" style="width:16px;height:16px"></span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">02 · Color</p>
+    <h2>Palette <span style="font-size:15px;font-weight:500;color:var(--muted)">click a swatch to copy its hex</span></h2>
+    <div class="swatches">
+      <button class="swatch" data-hex="#9B74FF">
+        <div class="chip" style="background:#9B74FF;color:#0B0B12">5.9:1 on ink</div>
+        <div class="meta"><div class="role">Primary</div><div class="name">Violet Light</div><div class="hex">#9B74FF</div><div class="rgb">rgb(155, 116, 255)</div><div class="use">The mark, “Fast”, buttons and links.</div></div>
+      </button>
+      <button class="swatch" data-hex="#0B0B12">
+        <div class="chip" style="background:#0B0B12;color:#fff;border-bottom:1px solid var(--line)">19.6:1 with white</div>
+        <div class="meta"><div class="role">Secondary</div><div class="name">Ink</div><div class="hex">#0B0B12</div><div class="rgb">rgb(11, 11, 18)</div><div class="use">App background. Text on top is white.</div></div>
+      </button>
+      <button class="swatch" data-hex="#15151F">
+        <div class="chip" style="background:#15151F;color:#9B74FF;border-bottom:1px solid var(--line)">5.5:1 violet on it</div>
+        <div class="meta"><div class="role">Surface</div><div class="name">Ink Raised</div><div class="hex">#15151F</div><div class="rgb">rgb(21, 21, 31)</div><div class="use">Cards, toolbars, tab strip.</div></div>
+      </button>
+      <button class="swatch" data-hex="#5201FC">
+        <div class="chip" style="background:#5201FC;color:#fff">7.6:1 on white</div>
+        <div class="meta"><div class="role">Light mode</div><div class="name">Electric Violet</div><div class="hex">#5201FC</div><div class="rgb">rgb(82, 1, 252)</div><div class="use">Replaces Violet Light on white backgrounds.</div></div>
+      </button>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="eyebrow">03 · Type</p>
+    <h2>Typography</h2>
+    <div class="type">
+      <div class="card">
+        <div class="sample-display">Fast<span style="color:var(--violet-light)">er.</span></div>
+        <div class="spec">Figtree Black Italic · 900<br>tracking −4.5% · wordmark &amp; headlines</div>
+      </div>
+      <div class="card">
+        <div class="sample-body">Your browser already knows what you meant. It just goes.</div>
+        <div class="spec">Figtree Medium · 500<br>body &amp; interface</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">BrowseFast brand sheet</div></footer>
+
+<script>
+document.querySelectorAll('.swatch').forEach(b => b.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(b.dataset.hex); } catch {}
+  b.classList.add('copied');
+  setTimeout(() => b.classList.remove('copied'), 1200);
+}));
+</script>
+</body>
+</html>
