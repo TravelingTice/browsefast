@@ -8,10 +8,16 @@ final class BrowserTab: Identifiable {
     let webView: WKWebView
     var title = "New tab"
     var isLoading = false
+    var favicon: NSImage?
+    /// The tab whose link opened this one, so its agent can follow it here.
+    let openerID: UUID?
     @ObservationIgnored fileprivate var delegate: TabDelegate?
     @ObservationIgnored fileprivate var titleObservation: NSKeyValueObservation?
 
-    init(webView: WKWebView) { self.webView = webView }
+    init(webView: WKWebView, openerID: UUID? = nil) {
+        self.webView = webView
+        self.openerID = openerID
+    }
 }
 
 /// The open tabs. Links that open a new window become a new, focused tab.
@@ -30,8 +36,8 @@ final class Browser {
 
     /// Pass the configuration WebKit hands over for a popup; it must be used for that web view.
     @discardableResult
-    func newTab(configuration: WKWebViewConfiguration? = nil) -> BrowserTab {
-        let tab = BrowserTab(webView: WKWebView(frame: .zero, configuration: configuration ?? self.configuration))
+    func newTab(configuration: WKWebViewConfiguration? = nil, openedBy opener: BrowserTab? = nil, focus: Bool = true) -> BrowserTab {
+        let tab = BrowserTab(webView: WKWebView(frame: .zero, configuration: configuration ?? self.configuration), openerID: opener?.id)
         let delegate = TabDelegate(tab: tab, browser: self)
         tab.delegate = delegate
         tab.webView.navigationDelegate = delegate
@@ -42,8 +48,8 @@ final class Browser {
             }
         }
         tabs.append(tab)
-        activeID = tab.id
-        Log.write("browser", "Opened tab \(tabs.count)")
+        if focus || activeID == nil { activeID = tab.id }
+        Log.write("browser", "Opened tab \(tabs.count)\(focus ? "" : " in the background")")
         return tab
     }
 
@@ -82,7 +88,10 @@ final class TabDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        Task { @MainActor in tab?.isLoading = false }
+        Task { @MainActor in
+            tab?.isLoading = false
+            await loadFavicon(for: webView)
+        }
         Log.write("browser", "Page loaded: \(webView.title ?? "") — \(webView.url?.absoluteString ?? "?")")
     }
 
@@ -99,7 +108,18 @@ final class TabDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         Log.write("browser", "Link opens in a new tab: \(navigationAction.request.url?.absoluteString ?? "?")")
-        return MainActor.assumeIsolated { browser?.newTab(configuration: configuration).webView }
+        return MainActor.assumeIsolated {
+            // Only take focus when the link was in the tab you're looking at; agents work in background tabs.
+            browser?.newTab(configuration: configuration, openedBy: tab, focus: tab?.id == browser?.activeID).webView
+        }
+    }
+
+    @MainActor private func loadFavicon(for webView: WKWebView) async {
+        let js = "(document.querySelector('link[rel~=\"icon\"][href$=\".png\"], link[rel~=\"icon\"], link[rel=\"apple-touch-icon\"]') || {}).href || (location.origin + '/favicon.ico')"
+        guard let href = try? await webView.evaluateJavaScript(js) as? String, let url = URL(string: href),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let image = NSImage(data: data), image.isValid else { return }
+        tab?.favicon = image
     }
 
     func webViewDidClose(_ webView: WKWebView) {

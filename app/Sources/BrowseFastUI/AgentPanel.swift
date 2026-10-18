@@ -3,7 +3,7 @@ import SwiftUI
 struct AgentPanel: View {
     @Binding var draft: String
     var enabled: Bool
-    var run: AgentRun
+    var run: TaskRun
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -101,15 +101,34 @@ struct AgentPanel: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding(.bottom, 12)
 
-                    ForEach(run.steps) { step in
+                    ForEach(run.timeline.steps) { step in
                         StepRow(step: step)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
 
-                    if let question = run.question {
-                        QuestionCard(question: question, answer: run.choose)
+                    if let question = run.questions.question {
+                        QuestionCard(question: question, answer: run.questions.choose)
                             .padding(.top, 10)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
+                    if run.agents.count == 1, let agent = run.agents.first {
+                        ForEach(agent.timeline.steps) { step in
+                            StepRow(step: step)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                        if let question = agent.questions.question {
+                            QuestionCard(question: question, answer: agent.questions.choose)
+                                .padding(.top, 10)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                    } else {
+                        ForEach(run.agents) { agent in
+                            AgentSection(agent: agent, isFocused: agent.tab.id == run.browser.activeID) {
+                                run.browser.select(agent.tab)
+                            }
+                            .padding(.top, 8)
+                        }
                     }
 
                     if let answer = run.answer {
@@ -121,15 +140,18 @@ struct AgentPanel: View {
                     Color.clear.frame(height: 1).id("end")
                 }
                 .padding(14)
-                .animation(.smooth(duration: 0.25), value: run.steps.count)
+                .animation(.smooth(duration: 0.25), value: stepCount)
                 .animation(.smooth(duration: 0.25), value: run.answer)
-                .animation(.smooth(duration: 0.25), value: run.question?.id)
+                .animation(.smooth(duration: 0.25), value: openQuestions)
             }
-            .onChange(of: run.steps.count) { withAnimation { proxy.scrollTo("end") } }
-            .onChange(of: run.question?.id) { withAnimation { proxy.scrollTo("end") } }
+            .onChange(of: stepCount) { withAnimation { proxy.scrollTo("end") } }
+            .onChange(of: openQuestions) { withAnimation { proxy.scrollTo("end") } }
             .onChange(of: run.answer) { withAnimation { proxy.scrollTo("end") } }
         }
     }
+
+    private var stepCount: Int { run.timeline.steps.count + run.agents.reduce(0) { $0 + $1.timeline.steps.count } }
+    private var openQuestions: Int { (run.questions.question == nil ? 0 : 1) + run.agents.filter(\.isWaiting).count }
 
     private var emptyState: some View {
         VStack(spacing: 10) {
@@ -156,7 +178,7 @@ struct AgentPanel: View {
 }
 
 private struct StepRow: View {
-    let step: AgentRun.Step
+    let step: Step
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -200,7 +222,7 @@ private struct StepRow: View {
 }
 
 struct DeciderIcon: View {
-    let decider: AgentRun.Decider
+    let decider: Decider
 
     var body: some View {
         Group {
@@ -228,9 +250,84 @@ struct DeciderIcon: View {
     }
 }
 
+/// One tab agent's steps under a header with its favicon and status. Tap the header to look at that tab.
+private struct AgentSection: View {
+    let agent: TabAgent
+    let isFocused: Bool
+    let focus: () -> Void
+    @State private var collapsed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Group {
+                    if let icon = agent.tab.favicon {
+                        Image(nsImage: icon).resizable().interpolation(.high)
+                    } else {
+                        Image(systemName: "globe").resizable().foregroundStyle(Theme.muted)
+                    }
+                }
+                .frame(width: 16, height: 16)
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+
+                Text(agent.name)
+                    .font(Theme.figtree(13.5, weight: 700))
+                    .foregroundStyle(.white)
+                Text(statusText)
+                    .font(Theme.figtree(12, weight: 500))
+                    .foregroundStyle(agent.isWaiting ? Theme.violetLight : agent.status == .failed ? Theme.danger : Theme.muted)
+                Spacer(minLength: 0)
+                if agent.status == .working && !agent.isWaiting { ProgressView().controlSize(.mini).tint(Theme.violetLight) }
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(isFocused ? Theme.surfaceHigh : Color.white.opacity(0.03)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(agent.isWaiting ? Theme.violetLight.opacity(0.6) : Theme.line, lineWidth: 1))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                focus()
+                withAnimation(.smooth(duration: 0.2)) { collapsed.toggle() }
+            }
+
+            if !collapsed {
+                ForEach(agent.timeline.steps) { step in
+                    StepRow(step: step).padding(.leading, 6)
+                }
+            }
+            if let question = agent.questions.question {
+                QuestionCard(question: question, answer: agent.questions.choose)
+                    .padding(.top, 6)
+            }
+            if !collapsed, let answer = agent.answer, agent.status != .working {
+                Text(answer)
+                    .font(Theme.figtree(12.5, weight: 500))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.04)))
+                    .padding(.leading, 6)
+            }
+        }
+    }
+
+    private var statusText: String {
+        if agent.isWaiting { return "needs your answer" }
+        switch agent.status {
+        case .working: return "working"
+        case .done: return "done"
+        case .failed: return "didn't finish"
+        }
+    }
+}
+
 private struct QuestionCard: View {
-    let question: AgentRun.Question
-    let answer: (AgentRun.Question.Choice) -> Void
+    let question: Question
+    let answer: (Question.Choice) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

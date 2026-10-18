@@ -5,7 +5,7 @@ public struct ContentView: View {
     @State private var claudeKey = KeyStore.read(.claude) ?? ""
     @State private var typesafeKey = KeyStore.read(.typesafe) ?? ""
     @State private var started = KeyStore.read(.claude) != nil && KeyStore.read(.typesafe) != nil
-    @State private var run = AgentRun()
+    @State private var run = TaskRun()
 
     public init() {}
 
@@ -13,7 +13,7 @@ public struct ContentView: View {
         HStack(spacing: 10) {
             BrowserPane {
                 if run.task != nil {
-                    BrowserView(webView: run.browser.active?.webView)
+                    BrowserView(tabs: run.browser.tabs, activeID: run.browser.activeID)
                         .transition(.opacity)
                 } else if started {
                     IntroView { draft = $0 }
@@ -30,7 +30,7 @@ public struct ContentView: View {
         .padding(.top, 38)
         .overlay(alignment: .topLeading) {
             // Sits in the title bar strip, right of the traffic lights.
-            TabBar(browser: run.browser)
+            TabBar(browser: run.browser, run: run)
                 .frame(height: 38)
                 .padding(.leading, 84)
         }

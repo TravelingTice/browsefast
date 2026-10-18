@@ -2,97 +2,48 @@ import Foundation
 import Observation
 import WebKit
 
-/// One task from start to finish: Claude plans, Jev picks each action (Claude takes over when Jev is unsure),
-/// the page script carries it out, and Claude checks the result. Every step goes to the sidebar and the log.
+/// One agent working in its own tab: Jev picks each action (Claude takes over when Jev is unsure), the page
+/// script carries it out, and Claude checks what was found. Several can run at once under one TaskRun.
 @MainActor @Observable
-final class AgentRun {
-    enum Decider: String {
-        case claude = "Claude"
-        case jev = "Jev"
-        case browseFast = "BrowseFast"
-        case you = "You"
-    }
+final class TabAgent: Identifiable {
+    enum Status { case working, done, failed }
 
-    /// A choice the agent can't make for the user, shown as buttons in the sidebar.
-    struct Question: Identifiable {
-        struct Choice: Identifiable, Hashable { let option: String; let label: String; var id: String { option } }
-        let id = UUID()
-        let text: String
-        let choices: [Choice]
-    }
-
-    enum StepStatus { case running, done, failed, blocked }
-
-    struct Step: Identifiable {
-        let id = UUID()
-        var decider: Decider
-        var text: String
-        var detail: String?
-        var status: StepStatus
-    }
-
-    private(set) var task: String?
-    private(set) var steps: [Step] = []
+    let id = UUID()
+    let name: String
+    private(set) var tab: BrowserTab
+    private(set) var status: Status = .working
     private(set) var answer: String?
-    private(set) var isRunning = false
-    private(set) var question: Question?
-    @ObservationIgnored private var questionContinuation: CheckedContinuation<Question.Choice, Error>?
+    private(set) var achieved = false
+    let timeline: Timeline
+    let questions = QuestionSlot()
 
-    let browser = Browser()
-    @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private unowned let coordinator: TaskRun
+    @ObservationIgnored private let browser: Browser
+    @ObservationIgnored private let task: String
+    @ObservationIgnored private let instruction: String
+    @ObservationIgnored private let startURL: URL
+    @ObservationIgnored private let goals: [Plan.Goal]
 
     static let maxActions = 25
     static let jevConfidenceFloor = 0.5
 
-    /// The agent always works in the focused tab.
-    private var webView: WKWebView { (browser.active ?? browser.newTab()).webView }
+    private var webView: WKWebView { tab.webView }
 
-    func start(_ task: String) {
-        guard !isRunning else { return }
-        if browser.tabs.isEmpty { browser.newTab() }
+    init(name: String, tab: BrowserTab, coordinator: TaskRun, browser: Browser, task: String,
+         instruction: String, startURL: URL, goals: [Plan.Goal]) {
+        self.name = name
+        self.tab = tab
+        self.coordinator = coordinator
+        self.browser = browser
         self.task = task
-        steps = []
-        answer = nil
-        isRunning = true
-        loop = Task {
-            await run(task)
-            isRunning = false
-        }
+        self.instruction = instruction
+        self.startURL = startURL
+        self.goals = goals
+        let slug = name.lowercased().filter { $0.isLetter || $0.isNumber }
+        timeline = Timeline(logTag: "agent:\(slug.isEmpty ? "tab" : slug)")
     }
 
-    func stop() {
-        loop?.cancel()
-    }
-
-    /// Called by the sidebar when the user picks one of the question's buttons.
-    func choose(_ choice: Question.Choice) {
-        question = nil
-        questionContinuation?.resume(returning: choice)
-        questionContinuation = nil
-    }
-
-    private func ask(_ question: Question) async throws -> Question.Choice {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.questionContinuation = continuation
-                self.question = question
-            }
-        } onCancel: {
-            Task { @MainActor in
-                self.question = nil
-                self.questionContinuation?.resume(throwing: CancellationError())
-                self.questionContinuation = nil
-            }
-        }
-    }
-
-    // MARK: - The run
-
-    private struct Plan: Decodable {
-        struct Goal: Decodable { let goal: String; let text: String }
-        let start_url: String
-        let goals: [Goal]
-    }
+    var isWaiting: Bool { questions.question != nil }
 
     private struct Decision: Decodable { let option: String; let text: String; let reason: String }
     private struct Typed: Decodable { let text: String }
@@ -103,53 +54,36 @@ final class AgentRun {
         let choices: [Choice]
     }
 
-    private func run(_ task: String) async {
+    private var tag: String { timeline.logTag }
+
+    func run() async {
         let started = Date()
-        Log.write("agent", "Task started: \(task)")
         let claude = ClaudeClient(apiKey: KeyStore.read(.claude) ?? "")
         let jev = JevClient(apiKey: KeyStore.read(.typesafe) ?? "")
         var history: [String] = []
-        var userChoices: [String] = []
         var decisions: [Decider: Int] = [:]
+        let steps = timeline
+        Log.write(tag, "Started on \(name): \(instruction)")
 
         do {
-            // 1. Plan
-            let planStep = begin(.claude, "Planning the task…")
-            var plan = try await claude.json(Plan.self, system: Prompts.planner, prompt: task, schema: Prompts.planSchema)
-            logClaude("Plan", plan)
-            decisions[.claude, default: 0] += 1
-            if plan.value.goals.isEmpty {
-                Log.write("agent", "Plan had no goals, planning again")
-                plan = try await claude.json(Plan.self, system: Prompts.planner,
-                                             prompt: task + "\n\nReturn at least two goals.", schema: Prompts.planSchema)
-                logClaude("Plan (retry)", plan)
-                decisions[.claude, default: 0] += 1
-            }
-            let goals = plan.value.goals.isEmpty ? [Plan.Goal(goal: task, text: "")] : plan.value.goals
-            finish(planStep, "Made a plan", detail: goals.enumerated()
-                .map { "\($0.offset + 1). \($0.element.goal)" }.joined(separator: "\n"))
-
-            // 2. Open the start page
-            let url = URL(string: plan.value.start_url) ?? URL(string: "https://www.google.com/?hl=en")!
-            let host = url.host() ?? url.absoluteString
-            let navStep = begin(.claude, "Opening \(host)…")
-            webView.load(URLRequest(url: url))
+            // 1. Open the start page
+            let host = startURL.host() ?? startURL.absoluteString
+            let navStep = steps.begin(.claude, "Opening \(host)…")
+            webView.load(URLRequest(url: startURL))
             try await settle()
-            finish(navStep, "Navigated to \(host)")
+            steps.finish(navStep, "Navigated to \(host)")
             history.append("Navigated to \(host)")
 
-            // 3. Act until the task is done. The plan is context for every decision, not a checklist to tick off:
-            // per-goal "is this goal done?" decisions were a third of all calls and the main source of low confidence.
+            // 2. Act until done. The plan is context for every decision, not a checklist to tick off.
             var pendingTexts = goals.map { $0.text.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let planLines = goals.map(\.goal)
             var actions = 0
             var lastAction = ""
             var repeats = 0
-            // Actions already taken in an identical page state (same URL and same element list), keyed by what
-            // the option does rather than its number. Single-page apps keep one URL, so the URL alone isn't enough.
+            // Actions already taken in an identical page state (same URL and element list), keyed by what the
+            // option does rather than its number. Single-page apps keep one URL, so the URL alone isn't enough.
             var tried: Set<String> = []
-            var visits: [String: Int] = [:]            // how often each exact page state came back
-            var answers: [String: String] = [:]        // question signature → the label the user picked
+            var visits: [String: Int] = [:]
             var lastPage = ""
             var stopReason: String?
 
@@ -157,7 +91,7 @@ final class AgentRun {
                 try Task.checkCancellation()
                 if actions >= Self.maxActions {
                     stopReason = "Stopped after \(Self.maxActions) actions without finishing"
-                    add(.browseFast, stopReason!, status: .failed)
+                    steps.add(.browseFast, stopReason!, status: .failed)
                     break
                 }
                 actions += 1
@@ -165,43 +99,40 @@ final class AgentRun {
                 let page = try await snapshot()
                 let pageState = "\(page.url)|\(page.elementList.hashValue)"
                 visits[pageState, default: 0] += 1
-                // Every model sees which page each action happened on.
                 if page.url + page.title != lastPage {
                     history.append("Now on: \(page.title.isEmpty ? page.url : page.title) (\(URL(string: page.url)?.host() ?? page.url))")
                     lastPage = page.url + page.title
                 }
                 if visits[pageState]! >= 5 {
                     stopReason = "Stuck in a loop: the same page kept coming back"
-                    add(.browseFast, stopReason!, status: .failed)
+                    steps.add(.browseFast, stopReason!, status: .failed)
                     break work
                 }
                 let looping = visits[pageState]! >= 3
                 if looping {
                     history.append("Loop warning: this exact page has come back \(visits[pageState]!) times. Choices already made stay made; don't redo them, move forward instead.")
                 }
+                let onSearchResults = Prompts.isSearchResults(page.url)
                 let options = Prompts.options(for: page, goalText: goalText)
                     .filter { !tried.contains("\(pageState)|\($0.description)") || $0.key.hasPrefix("scroll") || $0.key == "task_done" }
-                    + tabOptions()
-                    + askOption(onSearchResults: Prompts.isSearchResults(page.url))
-                let taskWithChoices = task + (userChoices.isEmpty ? "" : "\nThe user's choices so far: " + userChoices.joined(separator: "; "))
-                let state = Prompts.state(task: taskWithChoices, plan: planLines, goalText: goalText,
-                                          history: history, tabs: tabList(), page: page)
+                    + (onSearchResults ? [] : [("ask_user", "Ask the user: the page needs a choice the task doesn't specify (like a service, a person, gender, a date or a time)")])
+                let state = Prompts.state(task: contextualTask, plan: planLines, goalText: goalText,
+                                          history: history, tabs: "", page: page)
 
                 // Decide: Claude on search results pages (choosing a website is an open judgment call);
-                // elsewhere Jev first, and Claude when Jev is unsure, gives up, or keeps repeating itself.
+                // elsewhere Jev first, and Claude when Jev is unsure, gives up, loops or keeps repeating itself.
                 var decider = Decider.jev
                 var choice = "stuck"
                 var text: String? = goalText.isEmpty ? nil : goalText
                 var reason: String?
-                let onSearchResults = Prompts.isSearchResults(page.url)
-                let step = begin(onSearchResults ? .claude : .jev, onSearchResults ? "Choosing a search result…" : "Deciding the next step…")
+                let step = steps.begin(onSearchResults ? .claude : .jev, onSearchResults ? "Choosing a search result…" : "Deciding the next step…")
 
                 if onSearchResults {
                     reason = "search results page, Claude picks the website"
                 } else {
                     let pick = try await jev.choose(state: state, instructions: Prompts.jevInstructions, options: options)
                     let top = pick.probabilities.prefix(3).map { "\($0.option) \(String(format: "%.2f", $0.p))" }.joined(separator: ", ")
-                    Log.write("agent", "Jev chose \(pick.choice) (confidence \(String(format: "%.2f", pick.confidence)), \(pick.ms) ms)",
+                    Log.write(tag, "Jev chose \(pick.choice) (confidence \(String(format: "%.2f", pick.confidence)), \(pick.ms) ms)",
                               details: "top: \(top)\noptions: \(options.count)")
                     choice = pick.choice
                     let pageKey = "\(page.url)|\(choice)"
@@ -215,8 +146,8 @@ final class AgentRun {
                 }
 
                 if let reason {
-                    if !onSearchResults { update(step, decider: .claude, text: "Thinking about the next step…") }
-                    Log.write("agent", "Handing this step to Claude: \(reason)")
+                    if !onSearchResults { steps.update(step, decider: .claude, text: "Thinking about the next step…") }
+                    Log.write(tag, "Handing this step to Claude: \(reason)")
                     let schema = Prompts.decisionSchema(keys: options.map(\.key).filter { $0 != "stuck" })
                     let visibleText = (try? await webView.evaluateJavaScript("window.__browsefast.pageText()") as? String) ?? ""
                     let prompt = (onSearchResults ? Prompts.searchResultsHint + "\n\n" : "") + state
@@ -240,22 +171,22 @@ final class AgentRun {
 
                 switch kind {
                 case "task_done":
-                    finish(step, decider: decider, "The task looks done")
+                    steps.finish(step, decider: decider, "Done here")
                     break work
 
                 case "type":
-                    guard let element else { fail(step, "Couldn't find the field to type in"); continue work }
+                    guard let element else { steps.fail(step, "Couldn't find the field to type in"); continue work }
                     if text == nil {
                         // The decision was Jev's; writing the text is a separate Claude call, so it gets its own row.
-                        finish(step, decider: decider, "Chose the \(name) field to fill in")
-                        let writeStep = begin(.claude, "Writing what to type…")
+                        steps.finish(step, decider: decider, "Chose the \(name) field to fill in")
+                        let writeStep = steps.begin(.claude, "Writing what to type…")
                         let typed = try await claude.json(Typed.self, system: Prompts.writer,
-                                                          prompt: "Task: \(task)\nPlan: \(planLines.joined(separator: "; "))\nWhat happened so far:\n\(history.map { "- \($0)" }.joined(separator: "\n"))\nField: \(element.role) \"\(element.label)\"",
+                                                          prompt: "Task: \(contextualTask)\nPlan: \(planLines.joined(separator: "; "))\nWhat happened so far:\n\(history.map { "- \($0)" }.joined(separator: "\n"))\nField: \(element.role) \"\(element.label)\"",
                                                           schema: Prompts.typedSchema)
                         logClaude("Text", typed)
                         decisions[.claude, default: 0] += 1
                         guard !typed.value.text.isEmpty else {
-                            fail(writeStep, "Didn't know what to type in \(name)")
+                            steps.fail(writeStep, "Didn't know what to type in \(name)")
                             history.append("Could not decide what to type in \(name)")
                             continue work
                         }
@@ -270,7 +201,7 @@ final class AgentRun {
                     if text == pendingTexts.first { pendingTexts.removeFirst() }
 
                 case "submit":
-                    guard let element else { fail(step, "Couldn't find the field"); continue work }
+                    guard let element else { steps.fail(step, "Couldn't find the field"); continue work }
                     if try await perform(["kind": "submit", "id": element.id], step: step,
                                          success: "Pressed Enter in \(name)", decider: decider) == .blocked {
                         stopReason = "blocked"; break work
@@ -278,15 +209,19 @@ final class AgentRun {
                     history.append("Pressed Enter in \(name)")
 
                 case "click":
-                    guard let element else { fail(step, "Couldn't find what to click"); continue work }
-                    let tabsBefore = browser.tabs.count
+                    guard let element else { steps.fail(step, "Couldn't find what to click"); continue work }
+                    let before = tab.id
                     if try await perform(["kind": "click", "id": element.id], step: step,
                                          success: "Clicked \(name)", decider: decider) == .blocked {
                         stopReason = "blocked"; break work
                     }
-                    if browser.tabs.count > tabsBefore {
-                        steps[step].text = "Clicked \(name) (opened in a new tab)"
-                        history.append("Clicked \(name), which opened in a new tab (now focused)")
+                    // A link that opened in a new tab: keep working there.
+                    if let opened = browser.tabs.last(where: { $0.openerID == before && $0.id != before }), !adopted.contains(opened.id) {
+                        adopted.insert(opened.id)
+                        tab = opened
+                        steps.setText(step, "Clicked \(name) (opened in a new tab)")
+                        history.append("Clicked \(name), which opened in a new tab; continuing there")
+                        try await settle()
                     } else {
                         history.append("Clicked \(name)")
                     }
@@ -294,9 +229,9 @@ final class AgentRun {
                 case "ask_user":
                     // Every option, ignoring the loop guard: the user must be able to pick anything on the page.
                     let clickable = Prompts.options(for: page, goalText: "").filter { $0.key.hasPrefix("click_") }
-                    guard !clickable.isEmpty else { fail(step, "Wanted to ask you something, but there was nothing to choose from"); continue work }
-                    finish(step, decider: decider, "Needs your input")
-                    let askStep = begin(.claude, "Writing a question for you…")
+                    guard !clickable.isEmpty else { steps.fail(step, "Wanted to ask you something, but there was nothing to choose from"); continue work }
+                    steps.finish(step, decider: decider, "Needs your input")
+                    let askStep = steps.begin(.claude, "Writing a question for you…")
                     let asked = try await claude.json(AskOut.self, system: Prompts.asker,
                                                       prompt: state + "\n\nClickable options:\n" + clickable.map { "\($0.key): \($0.description)" }.joined(separator: "\n"),
                                                       schema: Prompts.askSchema(keys: clickable.map(\.key)))
@@ -305,19 +240,18 @@ final class AgentRun {
                     let choices = asked.value.choices.prefix(20).map { Question.Choice(option: $0.option, label: $0.label) }
                     guard !choices.isEmpty else {
                         // Usually the page is still rendering the options (a calendar animating in); look again.
-                        steps.removeSubrange(step...askStep)
-                        Log.write("agent", "Nothing to ask about yet, looking at the page again")
+                        steps.remove(step...askStep)
+                        Log.write(tag, "Nothing to ask about yet, looking at the page again")
                         try await Task.sleep(for: .seconds(1))
                         continue work
                     }
-                    finish(askStep, "Asked you: \(asked.value.question)")
                     let signature = choices.map(\.label).sorted().joined(separator: "|")
-                    let earlier = answers[signature] ?? answers[asked.value.question]
-                    if let earlier, let again = choices.first(where: { $0.label == earlier }) {
-                        // Asked before with the same options: reuse the answer instead of asking again.
-                        steps.removeSubrange(step...askStep)
-                        let reuseStep = begin(.you, "Used your earlier choice '\(again.label)'")
-                        Log.write("agent", "Reusing earlier answer '\(again.label)' for '\(asked.value.question)'")
+                    if let earlier = coordinator.answers[signature] ?? coordinator.answers[asked.value.question],
+                       let again = choices.first(where: { $0.label == earlier }) {
+                        // Asked before (here or in another tab) with the same options: reuse the answer.
+                        steps.remove(step...askStep)
+                        let reuseStep = steps.begin(.you, "Used your earlier choice '\(again.label)'")
+                        Log.write(tag, "Reusing earlier answer '\(again.label)' for '\(asked.value.question)'")
                         guard let againID = Prompts.parse(again.option).id else { continue work }
                         if try await perform(["kind": "click", "id": againID], step: reuseStep,
                                              success: "Used your earlier choice '\(again.label)'", decider: .you) == .blocked {
@@ -326,31 +260,17 @@ final class AgentRun {
                         history.append("Re-applied the user's earlier choice '\(again.label)'. This choice is now made; move on to the next step.")
                         continue work
                     }
-                    let picked = try await ask(Question(text: asked.value.question, choices: choices))
-                    answers[signature] = picked.label
-                    answers[asked.value.question] = picked.label
-                    Log.write("agent", "User answered '\(asked.value.question)' with '\(picked.label)' (\(picked.option))")
-                    userChoices.append("\(asked.value.question) → \(picked.label)")
+                    steps.finish(askStep, "Asked you: \(asked.value.question)")
+                    let picked = try await questions.ask(Question(text: asked.value.question, choices: choices))
+                    coordinator.remember(question: asked.value.question, signature: signature, answer: picked.label)
+                    Log.write(tag, "User answered '\(asked.value.question)' with '\(picked.label)' (\(picked.option))")
                     guard let pickedID = Prompts.parse(picked.option).id else { continue work }
-                    let youStep = begin(.you, "You chose '\(picked.label)'")
+                    let youStep = steps.begin(.you, "You chose '\(picked.label)'")
                     if try await perform(["kind": "click", "id": pickedID], step: youStep,
                                          success: "You chose '\(picked.label)'", decider: .you) == .blocked {
                         stopReason = "blocked"; break work
                     }
                     history.append("Asked the user '\(asked.value.question)', they chose '\(picked.label)' and it was clicked")
-
-                case "switch_tab":
-                    guard let id, let tab = browser.tabs[safe: id - 1] else { fail(step, "That tab no longer exists"); continue work }
-                    browser.select(tab)
-                    finish(step, decider: decider, "Switched to tab '\(Prompts.short(tab.title))'")
-                    history.append("Switched to tab \(id): \(tab.title)")
-                    try await settle()
-
-                case "close_tab":
-                    guard let tab = browser.active, browser.tabs.count > 1 else { fail(step, "There's no other tab to go back to"); continue work }
-                    browser.close(tab)
-                    finish(step, decider: decider, "Closed the tab '\(Prompts.short(tab.title))'")
-                    history.append("Closed tab: \(tab.title)")
 
                 case "scroll_down", "scroll_up":
                     let up = kind == "scroll_up"
@@ -363,17 +283,17 @@ final class AgentRun {
                     history.append("Went back")
 
                 default:
-                    fail(step, "Got an unknown action: \(choice)")
+                    steps.fail(step, "Got an unknown action: \(choice)")
                 }
             }
 
-            // 4. Check the result and answer
+            // 3. Check what was found
             try Task.checkCancellation()
-            let checkStep = begin(.claude, "Checking the result…")
+            let checkStep = steps.begin(.claude, "Checking what I found…")
             let text = (try? await webView.evaluateJavaScript("window.__browsefast.pageText()") as? String) ?? ""
             // Page text alone can't tell greyed-out options (like unavailable times) from real ones; the element list can.
             let finalElements = (try? await PageSnapshot.capture(from: webView))?.elementList ?? ""
-            let prompt = "Task: \(task)\n\nWhat BrowseFast did:\n" + history.map { "- \($0)" }.joined(separator: "\n")
+            let prompt = "Task: \(contextualTask)\n\nWhat BrowseFast did:\n" + history.map { "- \($0)" }.joined(separator: "\n")
                 + (stopReason.map { "\n\nStopped early: \($0)" } ?? "")
                 + "\n\nFinal page: \(webView.title ?? "") (\(webView.url?.absoluteString ?? ""))"
                 + "\n\nInteractive elements on screen (\"disabled\" means unavailable):\n\(finalElements)"
@@ -381,21 +301,34 @@ final class AgentRun {
             let verdict = try await claude.json(Verdict.self, system: Prompts.verifier, prompt: prompt, schema: Prompts.verdictSchema)
             logClaude("Result", verdict)
             decisions[.claude, default: 0] += 1
-            finish(checkStep, verdict.value.achieved ? "Found what you asked for" : "Couldn't fully finish the task")
-            if !verdict.value.achieved { steps[steps.count - 1].status = .failed }
+            steps.finish(checkStep, verdict.value.achieved ? "Found what you asked for" : "Couldn't fully finish here")
+            if !verdict.value.achieved { steps.setStatus(steps.steps.count - 1, .failed) }
+            achieved = verdict.value.achieved
             answer = verdict.value.answer
+            status = achieved ? .done : .failed
         } catch where Task.isCancelled {
-            markRunningAsFailed()
-            add(.browseFast, "Stopped by you", status: .failed)
-            Log.write("agent", "Task stopped by the user")
+            steps.markRunningAsFailed()
+            steps.add(.browseFast, "Stopped", status: .failed)
+            status = .failed
         } catch {
-            markRunningAsFailed()
-            add(.browseFast, "Something went wrong: \(error.localizedDescription)", status: .failed)
-            Log.write("agent", "Task failed: \(error.localizedDescription)")
+            steps.markRunningAsFailed()
+            steps.add(.browseFast, "Something went wrong: \(error.localizedDescription)", status: .failed)
+            answer = "Failed: \(error.localizedDescription)"
+            status = .failed
         }
 
         let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
-        Log.write("agent", "Task ended after \(seconds) s · \(steps.count) steps · decisions: Jev \(decisions[.jev] ?? 0), Claude \(decisions[.claude] ?? 0)")
+        Log.write(tag, "Ended after \(seconds) s · \(steps.steps.count) steps · decisions: Jev \(decisions[.jev] ?? 0), Claude \(decisions[.claude] ?? 0)")
+    }
+
+    @ObservationIgnored private var adopted: Set<UUID> = []
+
+    /// The overall task, this agent's part of it, and the user's choices so far.
+    private var contextualTask: String {
+        var text = task
+        if instruction != task { text += "\nYour part (on \(name)): \(instruction)" }
+        if !coordinator.userChoices.isEmpty { text += "\nThe user's choices so far: " + coordinator.userChoices.joined(separator: "; ") }
+        return text
     }
 
     // MARK: - Page helpers
@@ -407,12 +340,13 @@ final class AgentRun {
         while true {
             let all = Prompts.isSearchResults(webView.url?.absoluteString ?? "")
             if let page = try? await PageSnapshot.capture(from: webView, all: all), !page.elements.isEmpty || attempt == 4 {
-                Log.write("page", "Snapshot of \(page.url)\(attempt > 1 ? " (attempt \(attempt))" : ""): \(page.summary)",
+                Log.write(tag.replacingOccurrences(of: "agent", with: "page"),
+                          "Snapshot of \(page.url)\(attempt > 1 ? " (attempt \(attempt))" : ""): \(page.summary)",
                           details: page.elementList + (page.text.isEmpty ? "" : "\n--- text on screen ---\n" + page.text))
                 return page
             }
             if attempt == 4 { return try await PageSnapshot.capture(from: webView) }
-            Log.write("page", "No elements yet on \(webView.url?.absoluteString ?? "?"), waiting (attempt \(attempt))")
+            Log.write(tag, "No elements yet on \(webView.url?.absoluteString ?? "?"), waiting (attempt \(attempt))")
             attempt += 1
             try await Task.sleep(for: .milliseconds(1500))
         }
@@ -431,28 +365,10 @@ final class AgentRun {
                                                    contentWorld: .page)
         // Cookie banners cover the page; closing them is plain code, no model needed.
         if let button = try? await webView.evaluateJavaScript("window.__browsefast.dismissCookies()") as? String {
-            add(.browseFast, "Closed a cookie banner ('\(Prompts.short(button, 30))')", status: .done)
+            timeline.add(.browseFast, "Closed a cookie banner ('\(Prompts.short(button, 30))')", status: .done)
             _ = try? await webView.callAsyncJavaScript("await window.__browsefast.waitForQuiet(); return true",
                                                        contentWorld: .page)
         }
-    }
-
-    private func askOption(onSearchResults: Bool) -> [(key: String, description: String)] {
-        onSearchResults ? [] : [("ask_user", "Ask the user: the page needs a choice the task doesn't specify (like a service, a person, gender, a date or a time)")]
-    }
-
-    private func tabOptions() -> [(key: String, description: String)] {
-        guard browser.tabs.count > 1 else { return [] }
-        return browser.tabs.enumerated()
-            .filter { $0.element.id != browser.activeID }
-            .map { ("switch_tab_\($0.offset + 1)", "Switch to tab \($0.offset + 1): \"\($0.element.title)\"") }
-            + [("close_tab", "Close this tab and go back to the previous one")]
-    }
-
-    private func tabList() -> String {
-        browser.tabs.enumerated()
-            .map { "\($0.offset + 1). \($0.element.title)\($0.element.id == browser.activeID ? " (current)" : "")" }
-            .joined(separator: "\n")
     }
 
     @discardableResult
@@ -460,59 +376,24 @@ final class AgentRun {
         let json = String(data: try JSONSerialization.data(withJSONObject: command), encoding: .utf8)!
         let raw = try await webView.evaluateJavaScript("window.__browsefast.act(\(json))") as? String ?? "{}"
         let result = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
-        Log.write("agent", "Action \(json) → \(raw)")
+        Log.write(tag, "Action \(json) → \(raw)")
         if result["ok"] as? Bool == true {
-            finish(step, decider: decider, success)
+            timeline.finish(step, decider: decider, success)
             try await settle()
             return .done
         }
         let error = result["error"] as? String ?? "unknown error"
         if result["blocked"] as? Bool == true {
-            steps[step].status = .done
-            add(.browseFast, "Stopped before acting: \(error). BrowseFast doesn't book, buy or send personal details yet.", status: .blocked)
-            Log.write("agent", "Blocked by the safety guard: \(error)")
+            timeline.setStatus(step, .done)
+            timeline.add(.browseFast, "Stopped before acting: \(error). BrowseFast doesn't book, buy or send personal details yet.", status: .blocked)
+            Log.write(tag, "Blocked by the safety guard: \(error)")
             return .blocked
         }
-        fail(step, "\(success) failed: \(error)")
+        timeline.fail(step, "\(success) failed: \(error)")
         return .failed
     }
 
-    // MARK: - Steps
-
-    private func begin(_ decider: Decider, _ text: String) -> Int {
-        add(decider, text, status: .running)
-        return steps.count - 1
-    }
-
-    private func add(_ decider: Decider, _ text: String, detail: String? = nil, status: StepStatus) {
-        steps.append(Step(decider: decider, text: text, detail: detail, status: status))
-        if status != .running { Log.write("agent", "[\(decider.rawValue)] \(text)", details: detail) }
-    }
-
-    private func update(_ index: Int, decider: Decider, text: String) {
-        steps[index].decider = decider
-        steps[index].text = text
-    }
-
-    private func finish(_ index: Int, decider: Decider? = nil, _ text: String, detail: String? = nil) {
-        if let decider { steps[index].decider = decider }
-        steps[index].text = text
-        steps[index].detail = detail
-        steps[index].status = .done
-        Log.write("agent", "[\(steps[index].decider.rawValue)] \(text)", details: detail)
-    }
-
-    private func fail(_ index: Int, _ text: String) {
-        steps[index].text = text
-        steps[index].status = .failed
-        Log.write("agent", "[\(steps[index].decider.rawValue)] FAILED: \(text)")
-    }
-
-    private func markRunningAsFailed() {
-        for i in steps.indices where steps[i].status == .running { steps[i].status = .failed }
-    }
-
     private func logClaude<T>(_ what: String, _ reply: ClaudeClient.Reply<T>) {
-        Log.write("agent", "Claude \(what) (\(reply.ms) ms, \(reply.inputTokens) in / \(reply.outputTokens) out tokens)", details: reply.raw)
+        Log.write(tag, "Claude \(what) (\(reply.ms) ms, \(reply.inputTokens) in / \(reply.outputTokens) out tokens)", details: reply.raw)
     }
 }

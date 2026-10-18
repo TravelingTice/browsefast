@@ -3,30 +3,71 @@ import Foundation
 /// Everything the models are told, in one place.
 enum Prompts {
     static let planner = """
-    You plan tasks for BrowseFast, an AI browser agent that controls a real web browser. A fast model carries out each goal by clicking and typing on the page, so goals must be concrete and visible on screen.
+    You plan tasks for BrowseFast, an AI browser agent that controls a real web browser. Fast models carry out the plan by clicking and typing on pages, so goals must be concrete and visible on screen.
+
+    First decide whether the task needs one website or several in parallel ("parallel"). Use several (2 to 4) when the task asks to research or compare multiple websites, or when comparing sites clearly helps (like prices, flights or availability). Otherwise use one.
 
     Return:
-    - start_url: where to begin. Use https://www.google.com/?hl=en and start with a search goal, unless you are sure of the exact website.
-    - goals: 2 to 6 short goals in order, each reachable from the previous one with a few clicks. Put the exact text to type for a goal in "text" (for example a search query), or "" when the goal needs no typing.
+    - parallel: true when several sites should be researched at the same time.
+    - sources: one entry per site (exactly one when not parallel, at most 4). For each:
+      - name: a short site name, like "Google Flights" or "Skyscanner".
+      - start_url: where to begin. For a single site where you don't know the exact website, use https://www.google.com/?hl=en and start with a search. For parallel research, use each site's own homepage or search page.
+      - instruction: what to do on that site, phrased for that site.
+      - goals: 2 to 6 short goals in order. Put the exact text to type for a goal in "text" (for example a search query or a city), or "" when it needs no typing.
+    - questions: only for parallel tasks, questions every site would need answered that the task doesn't settle (for example one-way or return, or the number of passengers), each with 2 to 6 short choices. Leave it empty if the task settles everything, and never ask what the task already says.
 
-    BrowseFast is read-only for now: it must never book, buy, pay, subscribe or submit personal details. If the task asks for that, plan only up to the point where the options are visible (for example the available times) and stop there. The last goal should be that the information the user wants is visible on screen.
+    BrowseFast is read-only for now: it must never book, buy, pay, subscribe or submit personal details. Plan only up to the point where the information the user wants is visible on screen.
     """
 
     static let planSchema: [String: Any] = [
         "type": "object",
         "properties": [
-            "start_url": ["type": "string"],
-            "goals": [
+            "parallel": ["type": "boolean"],
+            "questions": [
                 "type": "array",
                 "items": [
                     "type": "object",
-                    "properties": ["goal": ["type": "string"], "text": ["type": "string"]],
-                    "required": ["goal", "text"],
+                    "properties": ["question": ["type": "string"], "choices": ["type": "array", "items": ["type": "string"]]],
+                    "required": ["question", "choices"],
+                    "additionalProperties": false,
+                ],
+            ],
+            "sources": [
+                "type": "array",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "name": ["type": "string"],
+                        "start_url": ["type": "string"],
+                        "instruction": ["type": "string"],
+                        "goals": [
+                            "type": "array",
+                            "items": [
+                                "type": "object",
+                                "properties": ["goal": ["type": "string"], "text": ["type": "string"]],
+                                "required": ["goal", "text"],
+                                "additionalProperties": false,
+                            ],
+                        ],
+                    ],
+                    "required": ["name", "start_url", "instruction", "goals"],
                     "additionalProperties": false,
                 ],
             ],
         ],
-        "required": ["start_url", "goals"],
+        "required": ["parallel", "questions", "sources"],
+        "additionalProperties": false,
+    ]
+
+    static let comparer = """
+    Several BrowseFast agents researched the same task on different websites. Combine their findings into one short answer for the user.
+    Lead with the best option (for example the cheapest matching flight: price, date, airline and which site), then list what each site found in one line each. Mention sites that failed and why, briefly. Only use facts from the findings; never make anything up.
+    """
+
+    static let comparisonSchema: [String: Any] = [
+        "type": "object",
+        "properties": ["answer": ["type": "string"]],
+        "required": ["answer"],
         "additionalProperties": false,
     ]
 
